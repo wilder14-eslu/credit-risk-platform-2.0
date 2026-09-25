@@ -1,0 +1,76 @@
+# Databricks Asset Bundle: toda la plataforma como código (jobs de CT, monitoreo,
+# A/B, rollback, Model Serving y Databricks Apps). Compatible con Free Edition
+# (solo compute serverless). Deploy: `databricks bundle deploy -t dev|prod`.
+bundle:
+  name: credit-risk-platform-2
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Catálogo de Unity Catalog (en Free Edition es `workspace`)
+    default: workspace
+  schema:
+    description: Esquema donde viven tablas, volúmenes y modelo
+    default: credit_risk
+  data_source:
+    description: '"real" (CSV de Lending Club en el Volume raw) o "synthetic" (demo sin descargar datos)'
+    default: real
+  deploy_serving:
+    description: Crear/actualizar el endpoint de Model Serving ("true" | "false")
+    default: "true"
+  optuna_trials:
+    description: Intentos de Optuna en el tuning del mejor algoritmo
+    default: "20"
+  warehouse_id:
+    description: ID del SQL warehouse (Free Edition trae uno 2X-Small) que usan las apps
+    default: ""
+  git_sha:
+    description: Commit desplegado (lo inyecta el pipeline de CD)
+    default: local
+
+sync:
+  exclude:
+    - ".venv/**"
+    - "tests/**"
+    - "docs/**"
+    - ".github/**"
+    - "data/**"
+    - "**/__pycache__/**"
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      schema: credit_risk_dev
+      optuna_trials: "3"
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      schema: credit_risk
+    # Las Databricks Apps solo se despliegan en prod (Free Edition permite hasta 3 apps).
+    resources:
+      apps:
+        credit_risk_api:
+          name: credit-risk-api
+          description: API FastAPI de scoring (Model Serving + A/B testing + logging a Delta)
+          source_code_path: ./apps/api
+          resources:
+            - name: sql-warehouse
+              sql_warehouse:
+                id: ${var.warehouse_id}
+                permission: CAN_USE
+        credit_risk_dashboard:
+          name: credit-risk-dashboard
+          description: Panel Streamlit de scoring y monitoreo
+          source_code_path: ./apps/dashboard
+          resources:
+            - name: sql-warehouse
+              sql_warehouse:
+                id: ${var.warehouse_id}
+                permission: CAN_USE

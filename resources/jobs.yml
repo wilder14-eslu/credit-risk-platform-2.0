@@ -1,0 +1,158 @@
+# Jobs serverless (Google MLOps nivel 2):
+#   CT pipeline : ingest -> calidad/features -> train/register -> validación/deploy (+ permisos apps)
+#   Monitoring  : replay -> monitor -> A/B -> (condition) -> run_job(CT pipeline con as_of)
+resources:
+  jobs:
+    ct_training_pipeline:
+      name: credit-risk-ct-training-pipeline
+      description: >-
+        Continuous Training sobre Lending Club: Bronze -> Silver (calidad) -> Gold (feature table UC),
+        benchmark de 4 algoritmos + Optuna, registro en Unity Catalog, validación champion/challenger
+        y despliegue en Model Serving con split A/B.
+      max_concurrent_runs: 1
+      tags:
+        project: credit-risk-2
+        layer: continuous-training
+      schedule:
+        quartz_cron_expression: "0 0 6 ? * MON"
+        timezone_id: America/Lima
+      parameters:
+        - name: trigger
+          default: schedule
+        - name: optuna_trials
+          default: ${var.optuna_trials}
+        - name: as_of
+          default: ""
+        - name: source
+          default: ${var.data_source}
+      environments:
+        - environment_key: ml
+          spec:
+            environment_version: "3"
+            dependencies:
+              - mlflow>=3.1
+              - xgboost>=2.0
+              - lightgbm>=4.3
+              - catboost>=1.2
+              - optuna>=3.6
+              - scikit-learn>=1.4
+              - pyyaml>=6.0
+              - databricks-sdk>=0.40
+      tasks:
+        - task_key: ingest_bronze
+          environment_key: ml
+          spark_python_task:
+            python_file: ../jobs/01_ingest_bronze.py
+            parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
+                         "--schema", "${var.schema}", "--source", "{{job.parameters.source}}"]
+
+        - task_key: silver_gold
+          depends_on: [{task_key: ingest_bronze}]
+          environment_key: ml
+          spark_python_task:
+            python_file: ../jobs/02_silver_gold.py
+            parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
+                         "--schema", "${var.schema}"]
+
+        - task_key: train_and_register
+          depends_on: [{task_key: silver_gold}]
+          environment_key: ml
+          spark_python_task:
+            python_file: ../jobs/03_train_register.py
+            parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
+                         "--schema", "${var.schema}", "--optuna-trials", "{{job.parameters.optuna_trials}}",
+                         "--trigger", "{{job.parameters.trigger}}", "--as-of", "{{job.parameters.as_of}}",
+                         "--git-sha", "${var.git_sha}"]
+
+        - task_key: validate_and_deploy
+          depends_on: [{task_key: train_and_register}]
+          environment_key: ml
+          spark_python_task:
+            python_file: ../jobs/04_validate_and_deploy.py
+            parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
+                         "--schema", "${var.schema}", "--deploy-serving", "${var.deploy_serving}"]
+
+    production_monitoring:
+      name: credit-risk-production-monitoring
+      description: >-
+        Re-juega la originación real de Lending Club (2015+), calcula data/prediction/concept drift con
+        desenlaces retrasados, evalúa el A/B test y dispara Continuous Training cuando corresponde.
+      max_concurrent_runs: 1
+      tags:
+        project: credit-risk-2
+        layer: monitoring
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"
+        timezone_id: America/Lima
+      parameters:
+        - name: months
+          default: "3"
+      environments:
+        - environment_key: ml
+          spec:
+            environment_version: "3"
+            dependencies:
+              - mlflow>=3.1
+              - xgboost>=2.0
+              - lightgbm>=4.3
+              - catboost>=1.2
+              - scikit-learn>=1.4
+              - pyyaml>=6.0
+              - databricks-sdk>=0.40
+      tasks:
+        - task_key: replay_production
+          environment_key: ml
+          spark_python_task:
+            python_file: ../jobs/05_replay_production.py
+            parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
+                         "--schema", "${var.schema}", "--months", "{{job.parameters.months}}"]
+
+        - task_key: monitor_drift
+          depends_on: [{task_key: replay_production}]
+          environment_key: ml
+          spark_python_task:
+            python_file: ../jobs/06_monitor.py
+            parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
+                         "--schema", "${var.schema}"]
+
+        - task_key: ab_evaluate
+          depends_on: [{task_key: monitor_drift}]
+          environment_key: ml
+          spark_python_task:
+            python_file: ../jobs/07_ab_evaluate.py
+            parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
+                         "--schema", "${var.schema}", "--deploy-serving", "${var.deploy_serving}"]
+
+        - task_key: needs_retraining
+          depends_on: [{task_key: ab_evaluate}]
+          condition_task:
+            op: EQUAL_TO
+            left: "{{tasks.monitor_drift.values.retrain}}"
+            right: "true"
+
+        - task_key: trigger_continuous_training
+          depends_on: [{task_key: needs_retraining, outcome: "true"}]
+          run_job_task:
+            job_id: ${resources.jobs.ct_training_pipeline.id}
+            job_parameters:
+              trigger: monitoring
+              as_of: "{{tasks.monitor_drift.values.clock}}"
+
+    model_rollback:
+      name: credit-risk-model-rollback
+      description: Rollback manual del champion a @previous_champion y redepliegue del endpoint.
+      tags:
+        project: credit-risk-2
+        layer: operations
+      environments:
+        - environment_key: ml
+          spec:
+            environment_version: "3"
+            dependencies: [mlflow>=3.1, pyyaml>=6.0, databricks-sdk>=0.40]
+      tasks:
+        - task_key: rollback
+          environment_key: ml
+          spark_python_task:
+            python_file: ../jobs/08_rollback.py
+            parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
+                         "--schema", "${var.schema}", "--deploy-serving", "${var.deploy_serving}"]

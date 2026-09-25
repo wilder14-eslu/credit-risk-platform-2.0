@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from credit_risk.config import input_features, target_name
-from credit_risk.features.engineering import OTHER, Preprocessor, build_features
+from credit_risk.features.engineering import MISSING, OTHER, Preprocessor, build_features
 from credit_risk.models import metrics as M
 from credit_risk.models import training as T
 from credit_risk.models.candidates import build_estimator
@@ -32,6 +32,32 @@ def test_preprocessor_handles_unseen_and_missing(canonical):
     assert x.loc[new.index[0], f"purpose={OTHER}"] == 1.0
     assert not x.isna().any().any()
     assert Preprocessor.source_feature("grade=B") == "grade"
+
+
+def test_missing_indicators_only_for_columns_with_nulls(canonical):
+    feats = build_features(canonical.head(3000))
+    feats.loc[feats.index[:300], "mort_acc"] = np.nan
+    feats["loan_amnt"] = feats["loan_amnt"].fillna(1000.0)
+    pre = Preprocessor().fit(feats)
+    assert "mort_acc" in pre.missing_indicators_
+    assert "loan_amnt" not in pre.missing_indicators_
+    out = pre.transform(feats)
+    flag = out[f"mort_acc={MISSING}"]
+    assert flag.iloc[:300].eq(1.0).all() and flag.iloc[300:].eq(feats["mort_acc"].iloc[300:].isna()).all()
+    assert not out.isna().any().any()
+    assert Preprocessor.source_feature(f"mort_acc={MISSING}") == "mort_acc"
+    # Un nulo en serving que no existía en train no crea columnas nuevas
+    row = feats.head(1).copy()
+    row["loan_amnt"] = np.nan
+    assert list(pre.transform(row).columns) == pre.columns_
+
+
+def test_preprocessor_without_indicators_attribute_still_works(canonical):
+    feats = build_features(canonical.head(500))
+    pre = Preprocessor().fit(feats)
+    cols = pre.columns_
+    del pre.missing_indicators_
+    assert list(pre.transform(feats).columns) == cols
 
 
 def test_time_based_split_has_no_leakage(splits, canonical):
@@ -63,6 +89,12 @@ def test_champion_vs_challenger():
     assert T.champion_vs_challenger(0.70, None)[0]
     assert T.champion_vs_challenger(0.705, 0.70)[0]
     assert not T.champion_vs_challenger(0.701, 0.70)[0]
+
+
+def test_same_data_source():
+    assert T.same_data_source({"data_source": "real"}, {"data_source": "real"})
+    assert not T.same_data_source({"data_source": "synthetic"}, {"data_source": "real"})
+    assert not T.same_data_source({}, {"data_source": "real"})  # champion antiguo sin tag
 
 
 def test_optuna(splits):

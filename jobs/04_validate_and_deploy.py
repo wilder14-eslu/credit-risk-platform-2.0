@@ -1,6 +1,7 @@
 """Job 4 - Validación offline champion vs challenger + despliegue en Model Serving + permisos de las apps.
 
 - Sin champion: el challenger se promueve directo (primer despliegue).
+- Champion de otra fuente de datos (p. ej. demo synthetic): se reemplaza directo, no son comparables.
 - Con champion: ambos se evalúan en el periodo de test OOT del challenger (el más reciente).
   Si el challenger mejora el AUC en `min_auc_improvement`, pasa al A/B test online.
 - Actualiza el endpoint de Databricks Model Serving (champion + challenger con split de tráfico)
@@ -49,6 +50,18 @@ def main() -> None:
         R.promote_challenger(names)
         champion_v, challenger_v = challenger_v, None
         lh.logger.info("Primer despliegue: v%s es champion", champion_v)
+    elif (
+        challenger_v
+        and champion_v
+        and not T.same_data_source(R.version_tags(names, champion_v), R.version_tags(names, challenger_v))
+    ):
+        # p. ej. champion del modo demo (synthetic) y challenger con Lending Club real
+        R.promote_challenger(names)
+        lh.logger.warning(
+            "Champion v%s entrenado con otra fuente de datos: v%s lo reemplaza sin A/B", champion_v, challenger_v
+        )
+        champion_v, challenger_v = challenger_v, None
+        lh.set_task_value("offline_validation", "reemplazo por cambio de fuente de datos")
     elif challenger_v and champion_v:
         tags = R.version_tags(names, challenger_v)
         missing = [k for k in ("validation_end", "test_end") if k not in tags]

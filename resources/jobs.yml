@@ -62,7 +62,7 @@ resources:
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
                          "--schema", "${var.schema}", "--optuna-trials", "{{job.parameters.optuna_trials}}",
                          "--trigger", "{{job.parameters.trigger}}", "--as-of", "{{job.parameters.as_of}}",
-                         "--git-sha", "${var.git_sha}"]
+                         "--git-sha", "${var.git_sha}", "--data-source", "{{job.parameters.source}}"]
 
         - task_key: validate_and_deploy
           depends_on: [{task_key: train_and_register}]

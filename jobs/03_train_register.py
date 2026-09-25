@@ -35,7 +35,9 @@ from credit_risk.registry import mlflow_registry as R  # noqa: E402
 
 def main() -> None:
     lh.configure_logging()
-    args = lh.job_args({"optuna-trials": None, "trigger": "manual", "git-sha": "local", "as-of": ""})
+    args = lh.job_args(
+        {"optuna-trials": None, "trigger": "manual", "git-sha": "local", "as-of": "", "data-source": "real"}
+    )
     names = lh.names_from(args)
     tcfg = platform_config()["training"]
     trials = int(args.optuna_trials) if args.optuna_trials not in (None, "") else tcfg["optuna_trials"]
@@ -89,6 +91,7 @@ def main() -> None:
         extra_tags={
             "trigger": args.trigger,
             "git_sha": args.git_sha,
+            "data_source": args.data_source,
             "train_end": split_cfg["train_end"],
             "validation_end": split_cfg["validation_end"],
             "test_end": split_cfg["test_end"],

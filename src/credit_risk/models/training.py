@@ -226,6 +226,16 @@ def check_quality_gates(result: dict[str, Any], gates: dict | None = None) -> tu
     return not reasons, reasons
 
 
+def same_data_source(champion_tags: dict[str, str], challenger_tags: dict[str, str]) -> bool:
+    """True si champion y challenger se entrenaron con la misma fuente (real vs synthetic).
+
+    Un champion sin tag `data_source` (versiones antiguas) o entrenado con datos
+    sintéticos no es comparable con uno real: el challenger lo reemplaza directo.
+    """
+    champion = champion_tags.get("data_source")
+    return champion is not None and champion == challenger_tags.get("data_source", "real")
+
+
 def champion_vs_challenger(
     challenger_auc: float, champion_auc: float | None, min_improvement: float | None = None
 ) -> tuple[bool, str]:

@@ -1,0 +1,12 @@
+{
+  "loan_id": "demo-001",
+  "application": {
+    "loan_amnt": 12000, "term_months": 36, "int_rate": 13.5, "installment": 407.2,
+    "grade": "C", "sub_grade": "C2", "emp_length_years": 5, "home_ownership": "RENT",
+    "annual_inc": 65000, "verification_status": "Source Verified", "purpose": "debt_consolidation",
+    "addr_state": "CA", "dti": 18.5, "delinq_2yrs": 0, "fico_score": 702, "inq_last_6mths": 1,
+    "open_acc": 10, "pub_rec": 0, "revol_bal": 14500, "revol_util": 55.2, "total_acc": 24,
+    "mort_acc": 1, "pub_rec_bankruptcies": 0, "credit_history_months": 180,
+    "application_type": "Individual", "initial_list_status": "w"
+  }
+}

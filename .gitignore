@@ -18,7 +18,7 @@ mlruns/
 *.joblib
 
 # Datos: Lending Club se descarga aparte (licencia y tamaño), nunca se versiona
-data/
+/data/
 *.csv
 *.csv.gz
 *.parquet

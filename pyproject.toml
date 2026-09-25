@@ -24,7 +24,7 @@ where = ["src"]
 line-length = 120
 target-version = "py310"
 src = ["src", "apps/api", "apps/dashboard"]
-extend-exclude = [".venv", "data", "mlruns"]
+extend-exclude = [".venv", "mlruns"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "W"]

@@ -1,0 +1,160 @@
+# Esquema canónico del dataset Lending Club 2007-2018 (accepted_2007_to_2018Q4.csv, Kaggle).
+# Solo se usan variables conocidas AL MOMENTO DE LA SOLICITUD. Todo lo que
+# ocurre después del desembolso (pagos, recuperaciones, último FICO...) está en
+# `leakage_columns` y se descarta en Bronze -> Silver para evitar data leakage.
+
+dataset: lending_club_2007_2018
+source_file: accepted_2007_to_2018Q4.csv   # también acepta la versión .csv.gz de Kaggle (cambia la extensión aquí)
+id_column: loan_id
+id_source: id
+date_column: issue_month
+date_source: issue_d
+
+target: target_default
+target_source: loan_status
+target_mapping:
+  positive:
+    - Charged Off
+    - Default
+    - "Does not meet the credit policy. Status:Charged Off"
+  negative:
+    - Fully Paid
+    - "Does not meet the credit policy. Status:Fully Paid"
+  # Current, Late, In Grace Period: préstamos sin desenlace -> no se etiquetan.
+
+numeric_features:
+  loan_amnt:
+    source: loan_amnt
+    min: 500
+    max: 40000
+    label: Monto solicitado (USD)
+  term_months:
+    source: term
+    min: 36
+    max: 60
+    label: Plazo (meses)
+  int_rate:
+    source: int_rate
+    min: 5
+    max: 31
+    label: Tasa de interés (%)
+  installment:
+    source: installment
+    min: 0
+    label: Cuota mensual (USD)
+  emp_length_years:
+    source: emp_length
+    min: 0
+    max: 10
+    label: Años en el empleo
+  annual_inc:
+    source: annual_inc
+    min: 0
+    label: Ingreso anual (USD)
+  dti:
+    source: dti
+    min: 0
+    max: 100
+    label: Ratio deuda / ingreso (%)
+  delinq_2yrs:
+    source: delinq_2yrs
+    min: 0
+    label: Morosidades 30+ días (2 años)
+  fico_score:
+    source: fico_range_low
+    min: 300
+    max: 850
+    label: Puntaje FICO al solicitar
+  inq_last_6mths:
+    source: inq_last_6mths
+    min: 0
+    label: Consultas de crédito (6 meses)
+  open_acc:
+    source: open_acc
+    min: 0
+    label: Líneas de crédito abiertas
+  pub_rec:
+    source: pub_rec
+    min: 0
+    label: Registros públicos negativos
+  revol_bal:
+    source: revol_bal
+    min: 0
+    label: Saldo revolvente (USD)
+  revol_util:
+    source: revol_util
+    min: 0
+    max: 200
+    label: Utilización revolvente (%)
+  total_acc:
+    source: total_acc
+    min: 0
+    label: Total de líneas de crédito
+  mort_acc:
+    source: mort_acc
+    min: 0
+    label: Hipotecas
+  pub_rec_bankruptcies:
+    source: pub_rec_bankruptcies
+    min: 0
+    label: Quiebras registradas
+  credit_history_months:
+    source: earliest_cr_line
+    min: 0
+    label: Antigüedad crediticia (meses)
+
+categorical_features:
+  grade:
+    source: grade
+    label: Grado asignado por Lending Club
+    values: [A, B, C, D, E, F, G]
+  sub_grade:
+    source: sub_grade
+    label: Subgrado
+  home_ownership:
+    source: home_ownership
+    label: Vivienda
+    values: [MORTGAGE, RENT, OWN, OTHER]
+  verification_status:
+    source: verification_status
+    label: Verificación de ingresos
+    values: [Not Verified, Source Verified, Verified]
+  purpose:
+    source: purpose
+    label: Propósito del préstamo
+  addr_state:
+    source: addr_state
+    label: Estado (EE. UU.)
+  application_type:
+    source: application_type
+    label: Tipo de solicitud
+    values: [Individual, Joint App]
+  initial_list_status:
+    source: initial_list_status
+    label: Listado inicial
+    values: [w, f]
+
+# Información posterior al desembolso: NUNCA debe llegar al modelo.
+leakage_columns:
+  - funded_amnt
+  - funded_amnt_inv
+  - out_prncp
+  - out_prncp_inv
+  - total_pymnt
+  - total_pymnt_inv
+  - total_rec_prncp
+  - total_rec_int
+  - total_rec_late_fee
+  - recoveries
+  - collection_recovery_fee
+  - last_pymnt_d
+  - last_pymnt_amnt
+  - next_pymnt_d
+  - last_credit_pull_d
+  - last_fico_range_high
+  - last_fico_range_low
+  - pymnt_plan
+  - hardship_flag
+  - debt_settlement_flag
+  - settlement_status
+  - settlement_amount

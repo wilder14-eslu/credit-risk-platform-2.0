@@ -1,0 +1,68 @@
+# Política operativa de la plataforma (versionada en Git: cambiarla pasa por CI/CD).
+
+data:
+  raw_volume_subdir: raw                   # /Volumes/<catalog>/<schema>/raw/<source_file>
+  # Split temporal (out-of-time), como se valida un scorecard en la banca:
+  train_end: "2013-01-01"                  # train: préstamos emitidos 2007-2012
+  validation_end: "2013-07-01"             # validación OOT: 2013-01 a 2013-06 (umbral y tuning)
+  test_end: "2014-01-01"                   # test OOT: 2013-07 a 2013-12 (quality gates)
+  production_start: "2014-01-01"           # desde aquí: originación "re-jugada" mes a mes
+  production_end: "2015-12-01"             # último mes con préstamos a 36 meses ya vencidos
+  # Sesgo de censura por la derecha: un préstamo solo tiene etiqueta si su plazo
+  # terminó antes del corte del archivo. Sin esto, los préstamos recientes con
+  # desenlace están sobre-representados por defaults tempranos y el modelo aprende
+  # un artefacto (p.ej. "60 meses = default").
+  label_snapshot: "2019-01-01"
+  max_train_rows: 400000                   # tope para cuidar la cuota diaria de Free Edition
+  random_state: 42
+
+replay:
+  months_per_run: 3                        # meses de originación que se "juegan" por corrida
+  max_rows_per_month: 4000                 # muestra por mes (cuota de compute)
+  label_delay_months: 6                    # el desenlace real se conoce con retraso
+
+training:
+  candidates: [logistic_regression, xgboost, lightgbm, catboost]
+  selection_metric: test_roc_auc
+  optuna_trials: 20
+  optuna_timeout_seconds: 900
+  cost_false_negative: 5.0                 # otorgar a quien incumple
+  cost_false_positive: 1.0                 # rechazar a un buen pagador
+
+quality_gates:
+  min_test_roc_auc: 0.66                   # Lending Club (solo variables de solicitud) ronda 0.70
+  max_overfit_gap: 0.08
+  max_brier: 0.20
+  max_latency_ms: 5.0
+  min_auc_improvement: 0.002
+
+ab_testing:
+  challenger_traffic: 0.20
+  min_labeled_per_arm: 500
+  alpha: 0.05
+  bootstrap_iterations: 500
+  max_test_months: 6
+
+monitoring:
+  window_months: 3
+  min_rows: 300
+  psi_warning: 0.10
+  psi_alert: 0.25
+  ks_pvalue_alert: 0.01
+  max_features_drifted: 3
+  prediction_psi_alert: 0.20
+  default_rate_abs_change: 0.03
+  auc_drop_alert: 0.04
+  ks_stat_drop_alert: 0.08
+  brier_increase_alert: 0.02
+  ddm_warning_level: 2.0
+  ddm_drift_level: 3.0
+  page_hinkley_delta: 0.005
+  page_hinkley_lambda: 50.0
+  retrain_cooldown_months: 3               # en tiempo simulado del replay
+
+serving:
+  endpoint_name: credit-risk-lc-endpoint
+  workload_size: Small
+  scale_to_zero: true
+  app_names: [credit-risk-api, credit-risk-dashboard]

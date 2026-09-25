@@ -60,12 +60,20 @@ def main() -> None:
         return
 
     clock = lh.read_pandas(f"SELECT max(event_ts) AS m FROM {names.inference_log} WHERE source = 'replay'")["m"].iloc[0]
+    # Inicio del test = primera solicitud servida por el challenger (con o sin desenlace aún).
+    # Ambos brazos se comparan solo desde esa fecha: mismo periodo, misma población.
+    started = lh.read_pandas(
+        f"SELECT min(event_ts) AS m FROM {names.inference_log} "
+        f"WHERE variant = 'challenger' AND model_version = '{challenger_v}'"
+    )["m"].iloc[0]
+    since = f"AND l.event_ts >= '{pd.Timestamp(started)}'" if pd.notna(started) else ""
     data = lh.read_pandas(f"""
         SELECT l.variant, l.probability, l.decision, l.event_ts, o.actual_default
         FROM {names.inference_log} l JOIN {names.outcomes} o ON l.request_id = o.request_id
         WHERE o.observed_ts <= '{pd.Timestamp(clock).date()}'
           AND ((l.variant = 'champion' AND l.model_version = '{champion_v}')
             OR (l.variant = 'challenger' AND l.model_version = '{challenger_v}'))
+          {since}
     """)
     arms = {
         v: {
@@ -75,7 +83,6 @@ def main() -> None:
         }
         for v, g in ((v, data[data["variant"] == v]) for v in ("champion", "challenger"))
     }
-    started = data.loc[data["variant"] == "challenger", "event_ts"].min()
     running = months_between(started, clock) if pd.notna(started) else 0
     result = evaluate_ab_test(arms["champion"], arms["challenger"], cfg, months_running=running)
     lh.logger.info("Resultado A/B: %s", result)

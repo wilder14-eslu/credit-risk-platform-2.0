@@ -1,0 +1,69 @@
+name: CD
+
+# Solo corre cuando CI termina en verde sobre main (o manualmente).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_training:
+        description: "Ejecutar el pipeline de CT en dev después del deploy (test de integración)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-dev:
+    name: Deploy bundle -> dev
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    outputs:
+      configured: ${{ steps.creds.outputs.configured }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - id: creds
+        name: Verificar credenciales
+        run: |
+          if [ -z "$DATABRICKS_HOST" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Sin secretos de Databricks: se omite el despliegue."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate + deploy (dev)
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          databricks bundle validate -t dev
+          databricks bundle deploy -t dev --var="git_sha=${GITHUB_SHA::7}"
+      - name: Test de integración (CT en dev)
+        if: steps.creds.outputs.configured == 'true' && inputs.run_training
+        run: databricks bundle run -t dev ct_training_pipeline --params trigger=ci,optuna_trials=2
+
+  deploy-prod:
+    name: Deploy bundle + Databricks Apps -> prod
+    needs: deploy-dev
+    if: needs.deploy-dev.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    environment: prod   # activa "Required reviewers" en GitHub para aprobar cada promoción
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - name: Deploy (prod)
+        run: databricks bundle deploy -t prod --var="git_sha=${GITHUB_SHA::7}" --var="warehouse_id=${WAREHOUSE_ID}"
+      - name: Desplegar y arrancar las apps (API + dashboard)
+        run: |
+          databricks bundle run -t prod credit_risk_api
+          databricks bundle run -t prod credit_risk_dashboard

@@ -1,0 +1,13 @@
+# Databricks App: API FastAPI. DATABRICKS_APP_PORT lo sustituye la plataforma.
+command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "$DATABRICKS_APP_PORT"]
+env:
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: SERVING_ENDPOINT
+    value: credit-risk-lc-endpoint
+  - name: UC_CATALOG
+    value: workspace
+  - name: UC_SCHEMA
+    value: credit_risk
+  - name: CHALLENGER_TRAFFIC
+    value: "0.2"

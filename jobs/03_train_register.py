@@ -2,7 +2,8 @@
 
 1. Split temporal out-of-time (o ventanas desplazadas con `--as-of` si lo disparó el monitoreo).
 2. Benchmark de 4 algoritmos sobre el mismo split (corridas anidadas en MLflow).
-3. Tuning con Optuna del ganador (solo con el periodo de validación).
+3. Tuning con Optuna del ganador (penaliza sobreajuste); si no pasa los gates, fallback
+   al mejor candidato del benchmark con parámetros por defecto que sí los pase.
 4. Gate absoluto de calidad; si falla, no se registra nada.
 5. Registro del modelo pyfunc en UC con alias @challenger + perfil de referencia para drift.
 """
@@ -54,13 +55,14 @@ def main() -> None:
             {"trigger": args.trigger, "git_sha": args.git_sha, "stage": "pipeline", "as_of": args.as_of or "config"}
         )
         mlflow.log_params({f"period_{k}": v for k, v in splits.periods.items()})
-        table, _ = T.run_benchmark(splits)
+        table, models = T.run_benchmark(splits)
         for _, row in table.iterrows():
             R.log_candidate(row["algorithm"], row.to_dict(), parent_run_id=parent.info.run_id)
-        best = T.select_best(table)
-        params = T.tune(best, splits, trials, tcfg["optuna_timeout_seconds"]) if trials > 0 else {}
-        model = T.fit_model(best, params, splits)
-        result = T.evaluate(model, splits)
+        best, model, result, origin = T.choose_final_model(
+            table, models, splits, trials, tcfg["optuna_timeout_seconds"]
+        )
+        mlflow.set_tags({"final_algorithm": best, "final_model_origin": origin})
+        lh.logger.info("Modelo final: %s (%s)", best, origin)
         mlflow.log_metrics({f"best_{k}": v for k, v in result.items() if isinstance(v, float)})
 
     bench = table.drop(columns=["params"]).copy()

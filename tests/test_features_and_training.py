@@ -69,6 +69,36 @@ def test_optuna(splits):
     assert "C" in T.tune("logistic_regression", splits, n_trials=2, timeout=60)
 
 
+def test_overfit_penalized_score():
+    assert T.overfit_penalized_score(0.80, 0.70, 0.08) == pytest.approx(0.68)
+    assert T.overfit_penalized_score(0.74, 0.70, 0.08) == pytest.approx(0.70)
+
+
+def test_choose_final_model_falls_back_when_tuned_fails(splits, monkeypatch):
+    table, models = T.run_benchmark(splits, ["logistic_regression", "xgboost"])
+    real_gates = T.check_quality_gates
+    calls = {"n": 0}
+
+    def gates(result, gates=None):
+        calls["n"] += 1
+        if calls["n"] == 1:  # primer chequeo = modelo ajustado: forzamos el fallo
+            return False, ["brecha train-test 0.0810 > 0.08"]
+        return real_gates(result, gates)
+
+    monkeypatch.setattr(T, "check_quality_gates", gates)
+    name, model, result, origin = T.choose_final_model(table, models, splits, n_trials=1, timeout=60)
+    assert origin == "fallback_default"
+    assert model is models[name]
+    assert real_gates(result)[0]
+
+
+def test_choose_final_model_keeps_tuned_when_it_passes(splits):
+    table, models = T.run_benchmark(splits, ["logistic_regression"])
+    name, _, result, origin = T.choose_final_model(table, models, splits, n_trials=1, timeout=60)
+    assert (name, origin) == ("logistic_regression", "optuna")
+    assert T.check_quality_gates(result)[0]
+
+
 def test_predict_frame_and_explanations(xgb_model, splits):
     frame = xgb_model.predict_frame(splits.x_test.head(10))
     assert frame["probability"].between(0, 1).all()

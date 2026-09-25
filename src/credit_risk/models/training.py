@@ -113,22 +113,72 @@ def evaluate(model: CreditRiskModel, splits: Splits) -> dict[str, Any]:
 
 
 def tune(name: str, splits: Splits, n_trials: int, timeout: int, seed: int = 42) -> dict[str, Any]:
-    """Optuna TPE maximizando AUC en el periodo de validación (el test no se toca)."""
+    """Optuna TPE maximizando AUC en el periodo de validación (el test no se toca).
+
+    El objetivo penaliza el sobreajuste: si la brecha AUC train-validación supera
+    `quality_gates.max_overfit_gap`, el exceso se resta del AUC de validación.
+    Así Optuna no elige hiperparámetros que luego fallarían el gate de brecha.
+    """
     import optuna
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
+    max_gap = platform_config()["quality_gates"]["max_overfit_gap"]
     pre, x_train = _fit_preprocessor(splits)
+    y_train = splits.y_train.to_numpy()
     x_val = pre.transform(build_features(splits.x_val)).to_numpy()
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(x_train), size=min(50_000, len(x_train)), replace=False)
 
     def objective(trial) -> float:
         est = build_estimator(name, suggest_params(trial, name), seed=seed)
-        est.fit(x_train, splits.y_train.to_numpy())
-        return M.classification_metrics(splits.y_val, est.predict_proba(x_val)[:, 1])["roc_auc"]
+        est.fit(x_train, y_train)
+        val_auc = M.classification_metrics(splits.y_val, est.predict_proba(x_val)[:, 1])["roc_auc"]
+        train_auc = M.classification_metrics(pd.Series(y_train[idx]), est.predict_proba(x_train[idx])[:, 1])["roc_auc"]
+        trial.set_user_attr("train_auc", train_auc)
+        trial.set_user_attr("val_auc", val_auc)
+        return overfit_penalized_score(train_auc, val_auc, max_gap)
 
     study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed))
     study.optimize(objective, n_trials=n_trials, timeout=timeout)
-    logger.info("Optuna %s: mejor AUC validación=%.4f", name, study.best_value)
+    logger.info("Optuna %s: mejor score validación (penalizado)=%.4f", name, study.best_value)
     return dict(study.best_params)
+
+
+def overfit_penalized_score(train_auc: float, val_auc: float, max_gap: float) -> float:
+    """AUC de validación menos el exceso de brecha train-validación sobre `max_gap`."""
+    return float(val_auc - max(0.0, (train_auc - val_auc) - max_gap))
+
+
+def choose_final_model(
+    table: pd.DataFrame,
+    models: dict[str, CreditRiskModel],
+    splits: Splits,
+    n_trials: int,
+    timeout: int,
+) -> tuple[str, CreditRiskModel, dict[str, Any], str]:
+    """Elige el modelo final: primero el ganador ajustado con Optuna; si no pasa
+    los quality gates, el mejor candidato del benchmark (parámetros por defecto)
+    que sí los pase. Si ninguno pasa, devuelve el ajustado para que el job falle
+    con un motivo claro. Retorna (algoritmo, modelo, métricas, origen)."""
+    best = select_best(table)
+    if n_trials > 0:
+        params = tune(best, splits, n_trials, timeout)
+        tuned = fit_model(best, params, splits)
+        tuned_result = evaluate(tuned, splits)
+        if check_quality_gates(tuned_result)[0]:
+            return best, tuned, tuned_result, "optuna"
+        logger.warning("El modelo ajustado no pasa los gates: %s", check_quality_gates(tuned_result)[1])
+    else:
+        tuned, tuned_result = models[best], evaluate(models[best], splits)
+        if check_quality_gates(tuned_result)[0]:
+            return best, tuned, tuned_result, "default"
+
+    for _, row in table.iterrows():
+        name = str(row["algorithm"])
+        if check_quality_gates(row.to_dict())[0]:
+            logger.info("Fallback: se usa %s con parámetros por defecto", name)
+            return name, models[name], evaluate(models[name], splits), "fallback_default"
+    return best, tuned, tuned_result, "optuna" if n_trials > 0 else "default"
 
 
 def run_benchmark(

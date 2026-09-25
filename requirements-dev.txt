@@ -1,0 +1,2 @@
+# Entorno local / CI
+-e .[ml,apps,dev]

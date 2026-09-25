@@ -1,0 +1,29 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+junit.xml
+*.egg-info/
+build/
+dist/
+.env
+.databrickscfg
+.databricks/
+catboost_info/
+mlruns/
+*.joblib
+
+# Datos: Lending Club se descarga aparte (licencia y tamaño), nunca se versiona
+data/
+*.csv
+*.csv.gz
+*.parquet
+
+# Herramientas locales
+.claude/
+.agents/
+_claude_tmp/

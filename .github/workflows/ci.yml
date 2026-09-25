@@ -50,7 +50,7 @@ jobs:
           import xml.etree.ElementTree as ET
           print(f"### Cobertura: {float(ET.parse('coverage.xml').getroot().get('line-rate')) * 100:.1f}%")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results-${{ matrix.python-version }}

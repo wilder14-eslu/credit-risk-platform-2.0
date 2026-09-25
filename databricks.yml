@@ -31,13 +31,12 @@ variables:
     default: local
 
 sync:
+  # .gitignore ya excluye /data/ (el CSV), .venv y __pycache__: el bundle lo respeta.
+  # Ojo: un patrón "data/**" aquí excluiría también src/credit_risk/data (el código).
   exclude:
-    - ".venv/**"
     - "tests/**"
     - "docs/**"
     - ".github/**"
-    - "data/**"
-    - "**/__pycache__/**"
 
 targets:
   dev:

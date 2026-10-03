@@ -16,6 +16,14 @@ def test_targets():
     assert BUNDLE["targets"]["staging"]["mode"] == "production"
 
 
+def test_production_like_targets_deploy_to_user_folder_not_shared():
+    """/Workspace/Shared es editable por todos los usuarios: se despliega bajo la carpeta del usuario."""
+    for name in ("staging", "prod"):
+        root = BUNDLE["targets"][name]["workspace"]["root_path"]
+        assert root.startswith("/Workspace/Users/${workspace.current_user.userName}/"), name
+        assert "/Shared" not in root
+
+
 def test_staging_is_isolated_and_cheap():
     """Staging comparte el workspace con prod: esquema propio, schedules pausados, sin Serving."""
     staging = BUNDLE["targets"]["staging"]

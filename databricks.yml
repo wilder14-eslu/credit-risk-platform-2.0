@@ -55,7 +55,7 @@ targets:
       name_prefix: "[staging] "
       trigger_pause_status: PAUSED
     workspace:
-      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
       schema: credit_risk_staging
       data_source: synthetic
@@ -65,7 +65,7 @@ targets:
   prod:
     mode: production
     workspace:
-      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
       schema: credit_risk
     # Las Databricks Apps solo se despliegan en prod (Free Edition permite hasta 3 apps).

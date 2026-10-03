@@ -78,6 +78,7 @@ def patch_platform(names: UCNames) -> None:
     lh.read_pandas, lh.write_pandas = read_pandas, write_pandas
     lh.set_task_value = TASK_VALUES.__setitem__
     lh.grant_app_access = lambda *a, **k: None
+    lh.table_version = lambda fq_name: 1  # en Databricks sale de DESCRIBE HISTORY
     uri = f"sqlite:///{TMP / 'mlflow.db'}"
 
     def setup_mlflow(experiment=None):
@@ -149,6 +150,14 @@ def main() -> None:
                 TASK_VALUES["clock"],
             )
             run("04_validate_and_deploy.py")
+
+    # Trazabilidad: toda versión registrada debe poder ligarse a su código y a su versión de datos.
+    from credit_risk.registry.lineage import missing_lineage
+
+    versions = mlflow.MlflowClient().search_model_versions(f"name='{names.model_name}'")
+    problems = {v.version: missing_lineage(v.tags) for v in versions if missing_lineage(v.tags)}
+    assert versions and not problems, f"Versiones sin lineage completo: {problems}"
+    print(f"\nLineage OK: {len(versions)} versiones con código y versión de datos")
 
     print("\n== Resumen del monitoreo")
     print(

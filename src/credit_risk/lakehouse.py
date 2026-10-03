@@ -130,6 +130,20 @@ def table_exists(fq_name: str) -> bool:
     return bool(spark().catalog.tableExists(fq_name))
 
 
+def table_version(fq_name: str) -> int | None:
+    """Última versión Delta de una tabla: liga cada modelo con los datos exactos que lo entrenaron.
+
+    Reproducir esos datos: `SELECT * FROM <tabla> VERSION AS OF <n>` (time travel de Delta Lake).
+    Devuelve None (y avisa) si no se puede leer el historial, para no bloquear el entrenamiento.
+    """
+    try:
+        row = spark().sql(f"DESCRIBE HISTORY {fq_name} LIMIT 1").select("version").first()
+        return int(row["version"])
+    except Exception as exc:
+        logger.warning("No se pudo leer la versión Delta de %s: %s", fq_name, exc)
+        return None
+
+
 def read_pandas(query_or_table: str) -> pd.DataFrame:
     s = spark()
     df = s.sql(query_or_table) if " " in query_or_table.strip() else s.table(query_or_table)

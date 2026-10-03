@@ -48,9 +48,42 @@ jobs:
         if: steps.creds.outputs.configured == 'true' && inputs.run_training
         run: databricks bundle run -t dev ct_training_pipeline --params trigger=ci,optuna_trials=2
 
+  integration-staging:
+    name: Gate de integración en staging (CT + monitoreo + trazabilidad)
+    needs: deploy-dev
+    if: needs.deploy-dev.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    # Un solo run de staging a la vez: comparte esquema, modelo y cuota de Free Edition.
+    concurrency:
+      group: databricks-staging
+      cancel-in-progress: false
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Deploy (staging, schedules pausados)
+        run: |
+          databricks bundle validate -t staging
+          databricks bundle deploy -t staging --var="git_sha=${GITHUB_SHA::7}"
+      # `bundle run` espera a que termine y devuelve error si el job falla: es el test de integración.
+      - name: CT completo con datos sintéticos (Bronze -> Silver -> Gold -> train -> validación)
+        run: databricks bundle run -t staging ct_training_pipeline --params trigger=ci,optuna_trials=2,source=synthetic
+      - name: Monitoreo + A/B sobre el replay (2 meses)
+        run: databricks bundle run -t staging production_monitoring --params months=2
+      - name: Smoke check de trazabilidad (código + versión Delta de datos)
+        run: |
+          pip install --quiet "mlflow-skinny>=3.1"
+          python tests/e2e/smoke_check.py --model workspace.credit_risk_staging.credit_default_model
+
   deploy-prod:
     name: Deploy bundle + Databricks Apps -> prod
-    needs: deploy-dev
+    needs: [deploy-dev, integration-staging]
     if: needs.deploy-dev.outputs.configured == 'true'
     runs-on: ubuntu-latest
     environment: prod   # activa "Required reviewers" en GitHub para aprobar cada promoción

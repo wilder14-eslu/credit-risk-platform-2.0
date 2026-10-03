@@ -13,6 +13,31 @@ JOBS = yaml.safe_load((PROJECT_ROOT / "resources" / "jobs.yml").read_text(encodi
 def test_targets():
     assert BUNDLE["targets"]["dev"]["mode"] == "development"
     assert BUNDLE["targets"]["prod"]["mode"] == "production"
+    assert BUNDLE["targets"]["staging"]["mode"] == "production"
+
+
+def test_staging_is_isolated_and_cheap():
+    """Staging comparte el workspace con prod: esquema propio, schedules pausados, sin Serving."""
+    staging = BUNDLE["targets"]["staging"]
+    assert staging["variables"]["schema"] not in (
+        BUNDLE["targets"]["prod"]["variables"]["schema"],
+        BUNDLE["targets"]["dev"]["variables"]["schema"],
+    )
+    assert staging["presets"]["trigger_pause_status"] == "PAUSED"
+    assert staging["presets"]["name_prefix"]
+    assert staging["variables"]["deploy_serving"] == "false"
+    assert staging["variables"]["data_source"] == "synthetic"
+    assert "resources" not in staging  # las Apps solo viven en prod
+
+
+def test_cd_promotes_to_prod_only_through_staging():
+    cd = yaml.safe_load((PROJECT_ROOT / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8"))["jobs"]
+    assert "integration-staging" in cd["deploy-prod"]["needs"]
+    assert cd["integration-staging"]["needs"] == "deploy-dev"
+    steps = " ".join(str(step.get("run", "")) for step in cd["integration-staging"]["steps"])
+    assert "bundle run -t staging ct_training_pipeline" in steps
+    assert "bundle run -t staging production_monitoring" in steps
+    assert "smoke_check.py" in steps
 
 
 @pytest.mark.parametrize("job_key", list(JOBS))
@@ -26,6 +51,36 @@ def test_tasks_are_serverless_and_files_exist(job_key):
         if "spark_python_task" in task:
             assert (PROJECT_ROOT / "resources" / task["spark_python_task"]["python_file"]).resolve().exists()
             assert task["environment_key"] in envs
+
+
+# Tareas que hacen append a tablas de log o cambian el estado del registro: reintentar duplicaría filas o
+# intercambiaría champion/previous otra vez. Solo se reintenta lo idempotente (overwrite o API declarativa).
+NON_IDEMPOTENT = {"train_and_register", "replay_production", "monitor_drift", "ab_evaluate", "rollback"}
+
+
+@pytest.mark.parametrize("job_key", list(JOBS))
+def test_jobs_have_reliability_policy(job_key):
+    job = JOBS[job_key]
+    assert job["timeout_seconds"] > 0
+    assert job["email_notifications"]["on_failure"]
+    assert job["health"]["rules"][0]["metric"] == "RUN_DURATION_SECONDS"
+    if job.get("max_concurrent_runs") == 1:
+        assert job["queue"]["enabled"] is True
+    for task in job["tasks"]:
+        if "spark_python_task" not in task:
+            continue
+        assert task["timeout_seconds"] > 0, task["task_key"]
+        retries = task["max_retries"]
+        if task["task_key"] in NON_IDEMPOTENT:
+            assert retries == 0, f"{task['task_key']} no es idempotente: no debe reintentar"
+        else:
+            assert 0 <= retries <= 2
+
+
+def test_no_hardcoded_emails_in_bundle():
+    text = (PROJECT_ROOT / "resources" / "jobs.yml").read_text(encoding="utf-8")
+    assert "@gmail.com" not in text and "@outlook" not in text
+    assert "${workspace.current_user.userName}" in text
 
 
 def test_no_classic_clusters():
@@ -60,3 +115,7 @@ def test_serving_config():
     assert ab["served_entities"][0]["entity_name"] == "workspace.credit_risk.credit_default_model"
     assert endpoint_for(UCNames("workspace", "credit_risk_dev")).endswith("-dev")
     assert not endpoint_for(names).endswith("-dev")
+    assert endpoint_for(UCNames("workspace", "credit_risk_staging")).endswith("-staging")
+    # los tres entornos nunca comparten endpoint
+    schemas = ("credit_risk", "credit_risk_dev", "credit_risk_staging")
+    assert len({endpoint_for(UCNames("workspace", sc)) for sc in schemas}) == 3

@@ -42,6 +42,9 @@ def main() -> None:
     tcfg = platform_config()["training"]
     trials = int(args.optuna_trials) if args.optuna_trials not in (None, "") else tcfg["optuna_trials"]
     split_cfg = T.split_config(args.as_of or None)
+    # Lineage de datos: versión Delta del feature table con la que se entrena (reproducible con time travel).
+    gold_version = str(lh.table_version(names.feature_table) or "unknown")
+    lh.logger.info("Feature table %s en versión Delta %s", names.feature_table, gold_version)
 
     R.setup_mlflow()
     cols = ", ".join([*input_features(), date_column(), target_name()])
@@ -54,7 +57,14 @@ def main() -> None:
 
     with mlflow.start_run(run_name=f"retraining-{args.trigger}") as parent:
         mlflow.set_tags(
-            {"trigger": args.trigger, "git_sha": args.git_sha, "stage": "pipeline", "as_of": args.as_of or "config"}
+            {
+                "trigger": args.trigger,
+                "git_sha": args.git_sha,
+                "stage": "pipeline",
+                "as_of": args.as_of or "config",
+                "gold_table": names.feature_table,
+                "gold_delta_version": gold_version,
+            }
         )
         mlflow.log_params({f"period_{k}": v for k, v in splits.periods.items()})
         table, models = T.run_benchmark(splits)
@@ -92,6 +102,8 @@ def main() -> None:
             "trigger": args.trigger,
             "git_sha": args.git_sha,
             "data_source": args.data_source,
+            "gold_table": names.feature_table,
+            "gold_delta_version": gold_version,
             "train_end": split_cfg["train_end"],
             "validation_end": split_cfg["validation_end"],
             "test_end": split_cfg["test_end"],

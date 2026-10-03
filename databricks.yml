@@ -46,6 +46,22 @@ targets:
       schema: credit_risk_dev
       optuna_trials: "3"
 
+  # Staging (cap. 10 del libro): réplica de prod en el mismo workspace (Free Edition solo tiene uno), aislada
+  # por esquema. Corre el pipeline completo con datos sintéticos y sin endpoint de Serving (cuota y ~10 min
+  # de aprovisionamiento); CD lo usa como gate de integración antes de promover a prod. Schedules pausados.
+  staging:
+    mode: production
+    presets:
+      name_prefix: "[staging] "
+      trigger_pause_status: PAUSED
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      schema: credit_risk_staging
+      data_source: synthetic
+      deploy_serving: "false"
+      optuna_trials: "2"
+
   prod:
     mode: production
     workspace:

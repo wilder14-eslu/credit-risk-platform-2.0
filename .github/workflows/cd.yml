@@ -28,7 +28,7 @@ jobs:
     outputs:
       configured: ${{ steps.creds.outputs.configured }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: databricks/setup-cli@main
       - id: creds
         name: Verificar credenciales
@@ -62,7 +62,7 @@ jobs:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: databricks/setup-cli@main
       - uses: actions/setup-python@v5
         with:
@@ -92,7 +92,7 @@ jobs:
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
       WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: databricks/setup-cli@main
       - name: Deploy (prod)
         run: databricks bundle deploy -t prod --var="git_sha=${GITHUB_SHA::7}" --var="warehouse_id=${WAREHOUSE_ID}"

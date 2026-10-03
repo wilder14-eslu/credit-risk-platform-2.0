@@ -1,3 +1,7 @@
+# Confiabilidad (Practical ML on Databricks, cap. 8): cada tarea define timeout y reintentos solo si es
+# idempotente (ingesta y silver/gold sobrescriben; las tareas que hacen append al log no reintentan);
+# cada job define cola, alerta de fallo/duración y límite global. Los correos usan al usuario
+# que despliega (${workspace.current_user.userName}) para no versionar direcciones en el repo.
 # Jobs serverless (Google MLOps nivel 2):
 #   CT pipeline : ingest -> calidad/features -> train/register -> validación/deploy (+ permisos apps)
 #   Monitoring  : replay -> monitor -> A/B -> (condition) -> run_job(CT pipeline con as_of)
@@ -10,6 +14,20 @@ resources:
         benchmark de 4 algoritmos + Optuna, registro en Unity Catalog, validación champion/challenger
         y despliegue en Model Serving con split A/B.
       max_concurrent_runs: 1
+      timeout_seconds: 7200
+      queue:                       # con max_concurrent_runs=1, encola en vez de omitir la corrida
+        enabled: true
+      email_notifications:         # el responsable del despliegue (sin correos en el repo)
+        on_failure: ["${workspace.current_user.userName}"]
+        on_duration_warning_threshold_exceeded: ["${workspace.current_user.userName}"]
+      notification_settings:
+        no_alert_for_skipped_runs: true
+        no_alert_for_canceled_runs: true
+      health:
+        rules:
+          - metric: RUN_DURATION_SECONDS
+            op: GREATER_THAN
+            value: 5400
       tags:
         project: credit-risk-2
         layer: continuous-training
@@ -41,6 +59,10 @@ resources:
       tasks:
         - task_key: ingest_bronze
           environment_key: ml
+          timeout_seconds: 1800
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          retry_on_timeout: false
           spark_python_task:
             python_file: ../jobs/01_ingest_bronze.py
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
@@ -49,6 +71,10 @@ resources:
         - task_key: silver_gold
           depends_on: [{task_key: ingest_bronze}]
           environment_key: ml
+          timeout_seconds: 1800
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          retry_on_timeout: false
           spark_python_task:
             python_file: ../jobs/02_silver_gold.py
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
@@ -57,6 +83,8 @@ resources:
         - task_key: train_and_register
           depends_on: [{task_key: silver_gold}]
           environment_key: ml
+          timeout_seconds: 3600
+          max_retries: 0
           spark_python_task:
             python_file: ../jobs/03_train_register.py
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
@@ -67,6 +95,10 @@ resources:
         - task_key: validate_and_deploy
           depends_on: [{task_key: train_and_register}]
           environment_key: ml
+          timeout_seconds: 2400
+          max_retries: 2
+          min_retry_interval_millis: 60000
+          retry_on_timeout: false
           spark_python_task:
             python_file: ../jobs/04_validate_and_deploy.py
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
@@ -78,6 +110,20 @@ resources:
         Re-juega la originación real de Lending Club (2015+), calcula data/prediction/concept drift con
         desenlaces retrasados, evalúa el A/B test y dispara Continuous Training cuando corresponde.
       max_concurrent_runs: 1
+      timeout_seconds: 5400
+      queue:                       # con max_concurrent_runs=1, encola en vez de omitir la corrida
+        enabled: true
+      email_notifications:         # el responsable del despliegue (sin correos en el repo)
+        on_failure: ["${workspace.current_user.userName}"]
+        on_duration_warning_threshold_exceeded: ["${workspace.current_user.userName}"]
+      notification_settings:
+        no_alert_for_skipped_runs: true
+        no_alert_for_canceled_runs: true
+      health:
+        rules:
+          - metric: RUN_DURATION_SECONDS
+            op: GREATER_THAN
+            value: 3600
       tags:
         project: credit-risk-2
         layer: monitoring
@@ -102,6 +148,8 @@ resources:
       tasks:
         - task_key: replay_production
           environment_key: ml
+          timeout_seconds: 1800
+          max_retries: 0
           spark_python_task:
             python_file: ../jobs/05_replay_production.py
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
@@ -110,6 +158,8 @@ resources:
         - task_key: monitor_drift
           depends_on: [{task_key: replay_production}]
           environment_key: ml
+          timeout_seconds: 900
+          max_retries: 0
           spark_python_task:
             python_file: ../jobs/06_monitor.py
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
@@ -118,6 +168,8 @@ resources:
         - task_key: ab_evaluate
           depends_on: [{task_key: monitor_drift}]
           environment_key: ml
+          timeout_seconds: 2400
+          max_retries: 0
           spark_python_task:
             python_file: ../jobs/07_ab_evaluate.py
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",
@@ -141,6 +193,20 @@ resources:
     model_rollback:
       name: credit-risk-model-rollback
       description: Rollback manual del champion a @previous_champion y redepliegue del endpoint.
+      timeout_seconds: 2400
+      queue:                       # con max_concurrent_runs=1, encola en vez de omitir la corrida
+        enabled: true
+      email_notifications:         # el responsable del despliegue (sin correos en el repo)
+        on_failure: ["${workspace.current_user.userName}"]
+        on_duration_warning_threshold_exceeded: ["${workspace.current_user.userName}"]
+      notification_settings:
+        no_alert_for_skipped_runs: true
+        no_alert_for_canceled_runs: true
+      health:
+        rules:
+          - metric: RUN_DURATION_SECONDS
+            op: GREATER_THAN
+            value: 1800
       tags:
         project: credit-risk-2
         layer: operations
@@ -152,6 +218,8 @@ resources:
       tasks:
         - task_key: rollback
           environment_key: ml
+          timeout_seconds: 1800
+          max_retries: 0
           spark_python_task:
             python_file: ../jobs/08_rollback.py
             parameters: ["--project-root", "${workspace.file_path}", "--catalog", "${var.catalog}",

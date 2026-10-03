@@ -17,9 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 def endpoint_for(names: UCNames) -> str:
-    """Un endpoint por entorno: dev (`*_dev`) no pisa al de producción."""
+    """Un endpoint por entorno: dev (`*_dev`) y staging (`*_staging`) no pisan al de producción."""
     base = platform_config()["serving"]["endpoint_name"]
-    return f"{base}-dev" if names.schema.endswith("_dev") else base
+    for env in ("dev", "staging"):
+        if names.schema.endswith(f"_{env}"):
+            return f"{base}-{env}"
+    return base
 
 
 def build_config(

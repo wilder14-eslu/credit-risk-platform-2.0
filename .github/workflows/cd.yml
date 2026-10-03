@@ -77,6 +77,9 @@ jobs:
       - name: Monitoreo + A/B sobre el replay (2 meses)
         run: databricks bundle run -t staging production_monitoring --params months=2
       - name: Smoke check de trazabilidad (código + versión Delta de datos)
+        env:
+          MLFLOW_TRACKING_URI: databricks
+          MLFLOW_REGISTRY_URI: databricks-uc
         run: |
           pip install --quiet "mlflow-skinny>=3.1"
           python tests/e2e/smoke_check.py --model workspace.credit_risk_staging.credit_default_model

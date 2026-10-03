@@ -22,7 +22,9 @@ from credit_risk.registry.lineage import missing_lineage  # noqa: E402
 def check(model: str, alias: str) -> list[str]:
     import mlflow
 
-    client = mlflow.MlflowClient(registry_uri="databricks-uc")
+    # Ambos URIs explícitos: si falta el tracking URI, MLflow 3 cae en `sqlite:///mlflow.db`, que
+    # mlflow-skinny no soporta (no trae SQLAlchemy) y además no es el workspace.
+    client = mlflow.MlflowClient(tracking_uri="databricks", registry_uri="databricks-uc")
     try:
         version = client.get_model_version_by_alias(model, alias)
     except Exception as exc:  # alias o modelo inexistente

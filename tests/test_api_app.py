@@ -152,5 +152,6 @@ def test_databricks_client_uses_served_model_path(api):
 
 
 def test_root_redirects_to_docs(client):
-    response = client.get("/", follow_redirects=False)
+    c, *_ = client
+    response = c.get("/", follow_redirects=False)
     assert response.status_code in (302, 307) and response.headers["location"] == "/docs"

@@ -1,8 +1,8 @@
-"""Lógica de la demo pública (Hugging Face Spaces), sin dependencias de UI.
+"""Lógica de la demo pública (Streamlit Community Cloud), sin dependencias de UI.
 
-El Space es autocontenido: lleva el modelo champion exportado de Unity Catalog
+La demo es autocontenida: lleva el modelo champion exportado de Unity Catalog
 (`model/credit_model.joblib`), el paquete `credit_risk` y la configuración YAML.
-No llama a Databricks: funciona 24/7 sin tokens ni endpoints encendidos.
+No llama a Databricks: funciona sin tokens ni endpoints encendidos.
 """
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-SPACE_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(__file__).resolve().parent
 
 # Debe definirse ANTES de importar credit_risk: config.py lee la ruta al importarse.
-os.environ.setdefault("CREDIT_RISK_CONFIG_DIR", str(SPACE_DIR / "config"))
-if str(SPACE_DIR) not in sys.path:
-    sys.path.insert(0, str(SPACE_DIR))
+os.environ.setdefault("CREDIT_RISK_CONFIG_DIR", str(APP_DIR / "config"))
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
 import pandas as pd  # noqa: E402
 
@@ -115,12 +115,12 @@ def build_record(**form: Any) -> dict[str, Any]:
 def load_model(path: str | None = None):
     import joblib
 
-    return joblib.load(path or SPACE_DIR / "model" / "credit_model.joblib")
+    return joblib.load(path or APP_DIR / "model" / "credit_model.joblib")
 
 
 @lru_cache(maxsize=1)
 def model_info() -> dict[str, Any]:
-    f = SPACE_DIR / "model" / "model_info.json"
+    f = APP_DIR / "model" / "model_info.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
 
 
@@ -129,13 +129,13 @@ def _first_existing(*paths: Path) -> Path | None:
 
 
 def figures_dir() -> Path | None:
-    """Figuras del análisis: las del Space o, al correr desde el repo, docs/figures."""
-    return _first_existing(SPACE_DIR / "figures", SPACE_DIR.parents[1] / "docs" / "figures")
+    """Figuras del análisis: las de la demo o, al correr desde el repo, docs/figures."""
+    return _first_existing(APP_DIR / "figures", APP_DIR.parents[1] / "docs" / "figures")
 
 
 @lru_cache(maxsize=1)
 def results() -> dict[str, Any]:
-    f = _first_existing(SPACE_DIR / "results" / "results.json", SPACE_DIR.parents[1] / "reports" / "results.json")
+    f = _first_existing(APP_DIR / "results" / "results.json", APP_DIR.parents[1] / "reports" / "results.json")
     return json.loads(f.read_text(encoding="utf-8")) if f else {}
 
 

@@ -1,0 +1,55 @@
+name: Demo pública
+
+# Publica el modelo champion de producción en la rama `demo`, de donde la despliega
+# Streamlit Community Cloud. Manual: después de un reentrenamiento que cambió el
+# champion, o cuando cambie la app de la demo.
+on:
+  workflow_dispatch:
+    inputs:
+      alias:
+        description: "Alias del modelo en Unity Catalog"
+        default: champion
+
+permissions:
+  contents: write # solo para actualizar la rama demo
+
+concurrency:
+  group: demo
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Exportar champion y publicar la rama demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # el mismo Python que se elige en Streamlit Cloud
+          cache: pip
+      - name: Verificar credenciales
+        run: |
+          for v in DATABRICKS_HOST DATABRICKS_TOKEN; do
+            if [ -z "${!v}" ]; then echo "::error::Falta el secret $v"; exit 1; fi
+          done
+      - name: Instalar
+        run: pip install -e ".[ml]" streamlit plotly
+      - name: Construir la demo (descarga el champion y prueba una predicción)
+        run: python scripts/build_demo.py --alias "${{ inputs.alias }}"
+      - name: Publicar en la rama demo
+        working-directory: build/demo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Rama huérfana de un solo commit: el historial no acumula modelos binarios.
+          git init -q -b demo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Demo: champion v$(jq -r '.version' model/model_info.json) (main ${GITHUB_SHA::7})"
+          git push -f -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" demo
+          echo "::notice::Rama demo actualizada; Streamlit Cloud redespliega solo."

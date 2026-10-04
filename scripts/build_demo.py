@@ -1,18 +1,19 @@
-"""Arma la carpeta del Hugging Face Space con el modelo champion de Unity Catalog.
+"""Arma la demo pública (Streamlit Community Cloud) con el modelo champion de Unity Catalog.
 
-El Space es autocontenido (no llama a Databricks): lleva la app Gradio, el paquete
+La demo es autocontenida (no llama a Databricks): lleva la app Streamlit, el paquete
 `credit_risk`, la configuración YAML, el modelo exportado, `reports/results.json` y
 las figuras del análisis. Antes de terminar corre una predicción DENTRO de la carpeta
-generada, sin acceso al repo, para garantizar que el Space arranca.
+generada, sin acceso al repo, para garantizar que la app arranca.
 
 Uso:
 
     # champion de producción (requiere credenciales de Databricks: perfil DEFAULT o DATABRICKS_HOST/TOKEN)
-    python scripts/build_hf_space.py
+    python scripts/build_demo.py
     # un modelo ya exportado (joblib de CreditRiskModel)
-    python scripts/build_hf_space.py --model ruta/credit_model.joblib
+    python scripts/build_demo.py --model ruta/credit_model.joblib
 
-Luego se sube con:  hf upload <usuario>/<space> build/hf_space . --repo-type space
+El workflow `.github/workflows/demo.yml` publica la carpeta en la rama `demo`, de donde
+la despliega Streamlit Community Cloud (archivo principal `app.py`, Python 3.12).
 """
 
 from __future__ import annotations
@@ -30,11 +31,11 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPACE_SRC = ROOT / "apps" / "hf_space"
+DEMO_SRC = ROOT / "apps" / "demo"
 sys.path.insert(0, str(ROOT / "src"))  # para deserializar CreditRiskModel
-logger = logging.getLogger("build_hf_space")
+logger = logging.getLogger("build_demo")
 
-BASE_REQUIREMENTS = ["pandas", "numpy", "scipy", "scikit-learn", "pyyaml", "joblib", "plotly"]
+BASE_REQUIREMENTS = ["streamlit", "plotly", "pandas", "numpy", "scipy", "scikit-learn", "pyyaml", "joblib"]
 ALGORITHM_REQUIREMENTS = {"catboost": ["catboost"], "xgboost": ["xgboost"], "lightgbm": ["lightgbm"]}
 SMOKE = (
     "import demo_core as D; "
@@ -67,7 +68,7 @@ def download_champion(alias: str, catalog: str, schema: str, dest: Path) -> dict
 
 
 def pinned_requirements(algorithm: str) -> list[str]:
-    """Fija las versiones del entorno donde se verificó el modelo: lo que carga aquí, carga en el Space."""
+    """Fija las versiones del entorno donde se verificó el modelo: lo que carga aquí, carga en la demo."""
     lines = []
     for pkg in BASE_REQUIREMENTS + ALGORITHM_REQUIREMENTS.get(algorithm, []):
         try:
@@ -77,21 +78,42 @@ def pinned_requirements(algorithm: str) -> list[str]:
     return lines
 
 
-def set_frontmatter(readme: str, key: str, value: str) -> str:
-    out = []
-    for line in readme.splitlines():
-        out.append(f"{key}: {value}" if line.startswith(f"{key}:") else line)
-    return "\n".join(out) + "\n"
+STREAMLIT_CONFIG = """[theme]
+primaryColor = "#2a78d6"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+"""
 
 
-def build(out: Path, model_path: Path | None, alias: str, catalog: str, schema: str, python_version: str) -> Path:
+def demo_readme(info: dict) -> str:
+    version_txt = f" v{info['version']}" if info.get("version") else ""
+    return f"""# Credit Risk Platform 2.0 · demo pública
+
+Rama generada automáticamente por `scripts/build_demo.py` (workflow `Demo pública`); no editar a mano.
+El código fuente está en la rama `main`.
+
+- Modelo: `{info["algorithm"]}`{version_txt} ({info["source"]}), umbral {info["threshold"]:.2f}
+- Exportado: {info["exported_at"]}
+- Despliegue: Streamlit Community Cloud, archivo principal `app.py`, Python 3.12
+
+> Demo educativa con datos históricos públicos. No es una herramienta de decisión crediticia real.
+"""
+
+
+def build(out: Path, model_path: Path | None, alias: str, catalog: str, schema: str) -> Path:
     if out.exists():
         shutil.rmtree(out)
     (out / "model").mkdir(parents=True)
+    (out / ".streamlit").mkdir()
+    (out / ".streamlit" / "config.toml").write_text(STREAMLIT_CONFIG, encoding="utf-8")
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
 
     for name in ("app.py", "demo_core.py"):
-        shutil.copy2(SPACE_SRC / name, out / name)
+        shutil.copy2(DEMO_SRC / name, out / name)
     shutil.copytree(ROOT / "src" / "credit_risk", out / "credit_risk", ignore=ignore)
     shutil.copytree(ROOT / "config", out / "config", ignore=ignore)
     if (ROOT / "reports" / "results.json").exists():
@@ -118,21 +140,19 @@ def build(out: Path, model_path: Path | None, alias: str, catalog: str, schema: 
     (out / "model" / "model_info.json").write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
     (out / "requirements.txt").write_text("\n".join(pinned_requirements(model.algorithm)) + "\n", encoding="utf-8")
 
-    readme = (SPACE_SRC / "README.md").read_text(encoding="utf-8")
-    try:
-        readme = set_frontmatter(readme, "sdk_version", version("gradio"))
-    except PackageNotFoundError:
-        pass
-    readme = set_frontmatter(readme, "python_version", f'"{python_version}"')
-    (out / "README.md").write_text(readme, encoding="utf-8")
+    (out / "README.md").write_text(demo_readme(info), encoding="utf-8")
 
     # Prueba en la carpeta final, sin el repo en el path ni CREDIT_RISK_CONFIG_DIR heredado.
     env = {k: v for k, v in os.environ.items() if k not in ("CREDIT_RISK_CONFIG_DIR", "PYTHONPATH")}
     check = subprocess.run([sys.executable, "-c", SMOKE], cwd=out, env=env, capture_output=True, text=True)
     if check.returncode != 0:
-        raise RuntimeError(f"El Space generado no puede puntuar:\n{check.stderr}")
+        raise RuntimeError(f"La demo generada no puede puntuar:\n{check.stderr}")
+    for cache in out.rglob("__pycache__"):
+        shutil.rmtree(cache, ignore_errors=True)
     logger.info("Smoke test OK (PD, decisión): %s", check.stdout.strip())
-    logger.info("Space listo en %s (%s %s)", out, info["algorithm"], info.get("version") or "")
+    logger.info(
+        "Demo lista en %s (%s%s)", out, info["algorithm"], f" v{info['version']}" if info.get("version") else ""
+    )
     return out
 
 
@@ -142,11 +162,10 @@ def main() -> None:
     parser.add_argument("--alias", default="champion")
     parser.add_argument("--catalog", default=os.getenv("UC_CATALOG", "workspace"))
     parser.add_argument("--schema", default=os.getenv("UC_SCHEMA", "credit_risk"), help="credit_risk = producción")
-    parser.add_argument("--out", type=Path, default=ROOT / "build" / "hf_space")
-    parser.add_argument("--python-version", default="3.12", help="Python del Space (igual al del entorno de build)")
+    parser.add_argument("--out", type=Path, default=ROOT / "build" / "demo")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
-    build(args.out, args.model, args.alias, args.catalog, args.schema, args.python_version)
+    build(args.out, args.model, args.alias, args.catalog, args.schema)
 
 
 if __name__ == "__main__":

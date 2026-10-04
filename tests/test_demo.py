@@ -1,4 +1,4 @@
-"""Demo de Hugging Face Spaces: lógica de scoring y carpeta autocontenida."""
+"""Demo pública (Streamlit Community Cloud): lógica de scoring, app y carpeta autocontenida."""
 
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ import pytest
 from credit_risk import config as C
 
 ROOT = Path(__file__).resolve().parents[1]
-SPACE = ROOT / "apps" / "hf_space"
+DEMO = ROOT / "apps" / "demo"
 
 
 @pytest.fixture(scope="module")
 def demo_core():
     mp = pytest.MonkeyPatch()
     mp.setenv("CREDIT_RISK_CONFIG_DIR", str(C.CONFIG_DIR))  # demo_core no debe alterar la config del proceso
-    mp.syspath_prepend(str(SPACE))
+    mp.syspath_prepend(str(DEMO))
     yield importlib.import_module("demo_core")
     mp.undo()
 
@@ -51,35 +51,45 @@ def test_score_orders_profiles_by_risk(demo_core, xgb_model):
     assert pds["Perfil conservador"]["probability"] < pds["Perfil riesgoso"]["probability"]
 
 
-def test_build_space_is_self_contained(tmp_path, lr_model):
-    """La carpeta generada puntúa sola: sin el repo en el path ni la config del entorno."""
+@pytest.fixture(scope="module")
+def built_demo(tmp_path_factory, lr_model):
     sys.path.insert(0, str(ROOT / "scripts"))
     try:
-        build_hf_space = importlib.import_module("build_hf_space")
+        build_demo = importlib.import_module("build_demo")
     finally:
         sys.path.remove(str(ROOT / "scripts"))
-    model_file = tmp_path / "model.joblib"
+    tmp = tmp_path_factory.mktemp("demo")
+    model_file = tmp / "model.joblib"
     joblib.dump(lr_model, model_file)
+    return build_demo.build(tmp / "out", model_file, "champion", "workspace", "credit_risk")
 
-    out = build_hf_space.build(tmp_path / "space", model_file, "champion", "workspace", "credit_risk", "3.12")
 
-    for name in ("app.py", "demo_core.py", "README.md", "requirements.txt", "config/data_schema.yaml"):
+def test_build_demo_is_self_contained(built_demo, lr_model):
+    """La carpeta generada puntúa sola (lo verifica build) y lleva todo lo que necesita Streamlit Cloud."""
+    out = built_demo
+    for name in ("app.py", "demo_core.py", "README.md", "requirements.txt", ".streamlit/config.toml"):
         assert (out / name).exists(), name
+    assert (out / "config" / "data_schema.yaml").exists()
     assert (out / "credit_risk" / "models" / "credit_model.py").exists()
+    assert not list(out.rglob("__pycache__"))
     info = json.loads((out / "model" / "model_info.json").read_text(encoding="utf-8"))
     assert info["algorithm"] == "logistic_regression" and info["threshold"] == pytest.approx(lr_model.threshold)
-    readme = (out / "README.md").read_text(encoding="utf-8")
-    assert readme.startswith("---\n") and 'python_version: "3.12"' in readme and "sdk: gradio" in readme
     reqs = (out / "requirements.txt").read_text(encoding="utf-8")
-    assert "scikit-learn" in reqs and "catboost" not in reqs
+    assert "streamlit" in reqs and "scikit-learn" in reqs and "catboost" not in reqs
 
 
-def test_gradio_app_evaluates(demo_core, lr_model, monkeypatch):
-    pytest.importorskip("gradio")
+def test_streamlit_app_scores_a_request(built_demo, monkeypatch):
+    """Corre la app generada de punta a punta, como en Streamlit Cloud."""
+    testing = pytest.importorskip("streamlit.testing.v1")
     pytest.importorskip("plotly")
-    app = importlib.import_module("app")
-    monkeypatch.setattr(demo_core, "load_model", lambda path=None: lr_model)
-    html, fig = app.evaluate(*demo_core.EXAMPLES["Perfil típico"])
-    assert "Probabilidad de default" in html and fig.data
-    assert app.build_demo() is not None
-    assert "AUC" in app.results_markdown()
+    monkeypatch.delitem(sys.modules, "demo_core", raising=False)  # usar el demo_core de la carpeta generada
+    monkeypatch.syspath_prepend(str(built_demo))
+    at = testing.AppTest.from_file(str(built_demo / "app.py"), default_timeout=60).run()
+    assert not at.exception, at.exception
+    assert [t.label for t in at.tabs] == ["Evaluar solicitud", "Por qué este modelo", "Arquitectura"]
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+    labels = {m.label: m.value for m in at.metric}
+    assert labels["Probabilidad de default"].endswith("%")
+    assert any(word in labels["Decisión"] for word in ("APROBAR", "RECHAZAR"))
+    assert labels["AUC test"].startswith("0.")

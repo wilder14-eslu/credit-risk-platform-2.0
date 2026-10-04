@@ -205,3 +205,38 @@ def test_pyfunc_roundtrip(tmp_path, lr_model, splits):
     out = mlflow.pyfunc.load_model(str(tmp_path / "pyfunc")).predict(sample, params={"explain": False})
     assert isinstance(out, pd.DataFrame) and (out["top_factors"] == "[]").all()
     assert target_name() not in out
+
+
+def test_pyfunc_is_servable_outside_the_repo(tmp_path, lr_model, splits):
+    """Model Serving no tiene `<raíz>/config`: el modelo debe llevar sus YAML y usarlos al cargar."""
+    import os
+    import subprocess
+    import sys
+
+    mlflow = pytest.importorskip("mlflow")
+    import joblib
+
+    from credit_risk.config import CONFIG_DIR, PROJECT_ROOT
+    from credit_risk.models.credit_model import CreditRiskPyfunc
+    from credit_risk.registry.mlflow_registry import is_servable
+
+    sample = splits.x_test.head(3).reset_index(drop=True)
+    sample.to_parquet(tmp_path / "x.parquet")
+    joblib.dump(lr_model, tmp_path / "m.joblib")
+    mlflow.pyfunc.save_model(
+        path=str(tmp_path / "pyfunc"),
+        python_model=CreditRiskPyfunc(),
+        artifacts={"credit_model": str(tmp_path / "m.joblib"), "config": str(CONFIG_DIR)},
+        code_paths=[str(PROJECT_ROOT / "src" / "credit_risk")],
+    )
+    code = (
+        "import mlflow, pandas as pd;"
+        f"m = mlflow.pyfunc.load_model(r'{tmp_path / 'pyfunc'}');"
+        f"print(len(m.predict(pd.read_parquet(r'{tmp_path / 'x.parquet'}'), params={{'explain': True}})))"
+    )
+    # Simula Serving: la ruta de configuración por defecto no existe.
+    env = {**os.environ, "CREDIT_RISK_CONFIG_DIR": str(tmp_path / "no-existe")}
+    done = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert done.stdout.strip().splitlines()[-1] == "3"
+    assert is_servable({"config_packaged": "true"}) and not is_servable({})

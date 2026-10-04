@@ -24,6 +24,18 @@ def _load_yaml(name: str) -> dict[str, Any]:
         return yaml.safe_load(handle)
 
 
+def set_config_dir(path: str | Path) -> None:
+    """Apunta la configuración a otro directorio (p. ej. el empaquetado dentro del modelo).
+
+    En Model Serving el código vive en /model/code y no existe `<raíz>/config`: el
+    pyfunc lleva los YAML como artefacto y llama a esta función al cargarse.
+    """
+    global CONFIG_DIR
+    CONFIG_DIR = Path(path)
+    data_schema.cache_clear()
+    platform_config.cache_clear()
+
+
 @lru_cache(maxsize=1)
 def data_schema() -> dict[str, Any]:
     return _load_yaml("data_schema.yaml")

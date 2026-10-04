@@ -106,6 +106,13 @@ try:  # MLflow es opcional en tests unitarios
         def load_context(self, context) -> None:
             import joblib
 
+            from credit_risk import config as C
+
+            # Los YAML viajan con el modelo: en Model Serving no existe <raíz>/config. Solo se usan
+            # si la configuración del entorno falta, para no alterar a un job que ya tiene la suya.
+            config_dir = context.artifacts.get("config")
+            if config_dir and not (C.CONFIG_DIR / "data_schema.yaml").exists():
+                C.set_config_dir(config_dir)
             self.model: CreditRiskModel = joblib.load(context.artifacts["credit_model"])
 
         def predict(self, context, model_input: pd.DataFrame, params: dict | None = None):

@@ -50,6 +50,14 @@ def main() -> None:
         R.promote_challenger(names)
         champion_v, challenger_v = challenger_v, None
         lh.logger.info("Primer despliegue: v%s es champion", champion_v)
+    elif challenger_v and champion_v and not R.is_servable(R.version_tags(names, champion_v)):
+        # versiones previas sin la configuración empaquetada fallan en Model Serving
+        R.promote_challenger(names)
+        lh.logger.warning(
+            "Champion v%s no es servible (sin config empaquetada): v%s lo reemplaza", champion_v, challenger_v
+        )
+        champion_v, challenger_v = challenger_v, None
+        lh.set_task_value("offline_validation", "reemplazo de un champion no servible")
     elif (
         challenger_v
         and champion_v

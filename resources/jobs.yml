@@ -108,7 +108,7 @@ resources:
     production_monitoring:
       name: credit-risk-production-monitoring
       description: >-
-        Re-juega la originación real de Lending Club (2015+), calcula data/prediction/concept drift con
+        Re-juega la originación real de Lending Club (2014-2015), calcula data/prediction/concept drift con
         desenlaces retrasados, evalúa el A/B test y dispara Continuous Training cuando corresponde.
       max_concurrent_runs: 1
       timeout_seconds: 5400

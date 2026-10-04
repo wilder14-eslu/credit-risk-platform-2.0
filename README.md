@@ -25,7 +25,7 @@ con todo el ciclo automatizado como código.
 | **Modelo en producción** | Elegido con una regla estadística (DeLong + Holm + parsimonia) entre 4 algoritmos y un scorecard WoE; AUC ~0.69 en test fuera de tiempo |
 | **Plataforma** | Databricks Free Edition: Jobs serverless, Delta Lake, Unity Catalog, MLflow, Model Serving y Databricks Apps |
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
-| **Calidad** | 89 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
+| **Calidad** | 91 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
 ## Resultados y análisis estadístico
 
@@ -347,7 +347,7 @@ Umbrales versionados en [`config/platform.yaml`](config/platform.yaml): cambiarl
 
 ## Ingeniería y confiabilidad
 
-- **Tests:** 89 tests unitarios y de contrato (cobertura ~94%) más un pipeline end-to-end que ejecuta todos los
+- **Tests:** 91 tests unitarios y de contrato (cobertura ~94%) más un pipeline end-to-end que ejecuta todos los
   jobs en local con DuckDB y MLflow sobre SQLite, sin necesidad de Databricks.
 - **Contratos de infraestructura:** los tests verifican que todas las tareas sean serverless, que solo las
   tareas idempotentes tengan reintentos, que staging y prod no compartan esquema ni endpoint y que no haya
@@ -399,7 +399,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
 
-pytest                                         # 89 tests, sin Databricks
+pytest                                         # 91 tests, sin Databricks
 python tests/e2e/run_pipeline_locally.py       # ciclo completo con datos sintéticos
 ```
 

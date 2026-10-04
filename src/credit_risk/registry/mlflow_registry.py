@@ -11,10 +11,14 @@ from typing import Any
 import joblib
 import pandas as pd
 
+from credit_risk import config as C
 from credit_risk.config import CHALLENGER_ALIAS, CHAMPION_ALIAS, EXPERIMENT_NAME, PROJECT_ROOT, UCNames
 from credit_risk.models.credit_model import CreditRiskModel, CreditRiskPyfunc
 
 logger = logging.getLogger(__name__)
+
+# Versiones registradas con la configuración empaquetada (servibles fuera del repo).
+SERVABLE_TAG = "config_packaged"
 
 SERVING_REQUIREMENTS = [
     "mlflow>=3.1",
@@ -89,7 +93,7 @@ def log_and_register(
             info = mlflow.pyfunc.log_model(
                 name="model",
                 python_model=CreditRiskPyfunc(),
-                artifacts={"credit_model": str(model_file)},
+                artifacts={"credit_model": str(model_file), "config": str(C.CONFIG_DIR)},
                 code_paths=[str(PROJECT_ROOT / "src" / "credit_risk")],
                 signature=signature,
                 input_example=input_example.head(3),
@@ -103,6 +107,7 @@ def log_and_register(
     for key in ("test_roc_auc", "test_ks", "test_brier", "latency_ms", "threshold"):
         client.set_model_version_tag(names.model_name, version, key, f"{result[key]:.6f}")
     client.set_model_version_tag(names.model_name, version, "algorithm", model.algorithm)
+    client.set_model_version_tag(names.model_name, version, SERVABLE_TAG, "true")
     # Tags de versión (no solo de la corrida): la validación champion/challenger lee
     # de aquí los cortes temporales para evaluar ambos en el test OOT del challenger.
     for key, value in (extra_tags or {}).items():
@@ -168,6 +173,11 @@ def rollback(names: UCNames) -> str:
         raise RuntimeError("No hay versión previa para hacer rollback")
     set_alias(names, CHAMPION_ALIAS, previous)
     return previous
+
+
+def is_servable(tags: dict[str, str]) -> bool:
+    """True si la versión empaqueta su configuración (las anteriores fallan en Model Serving)."""
+    return tags.get(SERVABLE_TAG) == "true"
 
 
 def version_tags(names: UCNames, version: str) -> dict[str, str]:

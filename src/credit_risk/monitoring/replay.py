@@ -1,7 +1,7 @@
 """Replay temporal: "producción" con préstamos reales emitidos después del entrenamiento.
 
 En lugar de inventar drift, se re-juega la originación real de Lending Club mes a
-mes (2015 en adelante). El reloj simulado es el último mes procesado y las
+mes (originación 2014-2015). El reloj simulado es el último mes procesado y las
 etiquetas reales solo se "conocen" `label_delay_months` después, como en un banco.
 """
 

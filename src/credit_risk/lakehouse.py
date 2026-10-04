@@ -82,6 +82,21 @@ CREATE TABLE IF NOT EXISTS {t} (
   selected BOOLEAN, registered_version STRING
 )
 """,
+    "model_evaluation": """
+CREATE TABLE IF NOT EXISTS {t} (
+  run_ts TIMESTAMP, split STRING COMMENT 'validation | test', model STRING, auc DOUBLE, auc_ci_low DOUBLE,
+  auc_ci_high DOUBLE, delta_vs_best DOUBLE, p_holm DOUBLE, complexity INT, eligible BOOLEAN, retained BOOLEAN,
+  selected BOOLEAN,
+  registered_version STRING
+) COMMENT 'AUC con IC de DeLong por candidato: selección en validación y reporte en test'
+""",
+    "model_comparison": """
+CREATE TABLE IF NOT EXISTS {t} (
+  run_ts TIMESTAMP, split STRING, model_a STRING, model_b STRING, auc_a DOUBLE, auc_b DOUBLE, delta DOUBLE,
+  ci_low DOUBLE, ci_high DOUBLE, p_value DOUBLE, p_holm DOUBLE, interpretation STRING,
+  registered_version STRING
+) COMMENT 'Comparaciones pareadas de DeLong con ajuste de Holm en el test fuera de tiempo'
+""",
     "retrain_events": """
 CREATE TABLE IF NOT EXISTS {t} (
   event_ts TIMESTAMP, clock_month TIMESTAMP, trigger STRING, reasons STRING, model_version STRING

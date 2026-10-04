@@ -134,6 +134,25 @@ el AUC de validación **penalizado por sobreajuste**: si la brecha entre el AUC 
 validación supera 0.08, el exceso se resta del puntaje. Si el modelo ajustado no pasa los quality gates, se
 recurre al mejor candidato del benchmark con parámetros por defecto que sí los pase.
 
+**Selección del modelo (sobre la validación).** El test no participa en ninguna decisión:
+
+1. Son elegibles los candidatos con latencia y brecha de sobreajuste (train contra **validación**) dentro de
+   los gates.
+2. El de mayor AUC de validación es la referencia. Cada otro candidato se compara con ella mediante el test
+   de **DeLong** para AUC correlacionados (mismos préstamos), y los p-valores se ajustan con **Holm**.
+3. Un candidato se descarta solo si es peor de forma **significativa** (p Holm < 0.05) **y material**
+   (ΔAUC ≥ 0.005, margen de equivalencia práctica).
+4. Entre los que sobreviven gana el de **menor complejidad** (regresión logística = 1, GBM = 2); a igual
+   complejidad, el de mayor AUC.
+
+Así no se premia con más complejidad una diferencia que es ruido, y el AUC reportado en el test no arrastra el
+sesgo optimista de haber elegido el mejor de varios sobre él.
+
+**Scorecard WoE (benchmark regulatorio).** Binning por cuantiles para numéricas y por nivel para categóricas
+(niveles con menos de 1% agrupados, faltantes en bin propio), WoE con suavizado, Information Value, regresión
+logística sobre WoE y escalado a puntos (PDO 20, 600 puntos = odds 50:1). Se ajusta solo con el entrenamiento
+y se reporta en el test junto a los demás; no se despliega.
+
 **Umbral de decisión.** El que minimiza `5 · FN + 1 · FP` en validación.
 
 **Quality gates (absolutos).** AUC de test ≥ 0.66, brecha de sobreajuste ≤ 0.08, Brier ≤ 0.20 y latencia
@@ -168,6 +187,17 @@ Corrida de producción sobre los datos reales, test fuera de tiempo (2013-H2):
   es totalmente interpretable y es el estándar regulatorio en banca. Si esa diferencia resulta significativa
   y relevante para el negocio es una pregunta abierta (sección 12).
 - **La calibración es prácticamente idéntica** entre los cuatro (Brier entre 0.1235 y 0.1244).
+
+> Esta tabla corresponde a la corrida anterior a la selección estadística, cuando el modelo se elegía por el
+> AUC puntual del test. Desde la siguiente corrida, el informe de cada versión incluye la selección en
+> validación, el AUC de cada candidato con IC 95 % de DeLong, las comparaciones pareadas con Holm y el
+> Information Value del scorecard (tablas `model_evaluation` y `model_comparison`).
+
+**Una observación que el scorecard hace explícita.** `grade`, `sub_grade` e `int_rate` son **salidas del modelo
+interno de Lending Club** (la tasa se fija según el grado). Es esperable que su IV supere 0.5, el umbral que
+la regla habitual marca para revisar fugas. No son una fuga temporal, porque se conocen al aprobar, pero
+significan que el modelo se apoya en parte en el scoring de Lending Club. Medir el AUC sin esas tres
+variables cuantifica cuánto aporta el modelo propio.
 
 ## 8. Arquitectura y despliegue
 
@@ -240,10 +270,8 @@ Aplicando las prácticas de Sinha (cap. 8) dentro de los límites de Free Editio
 
 ## 11. Limitaciones y riesgos
 
-1. **Selección sobre el test.** El modelo final se elige por el AUC de test y ese mismo AUC se reporta. Elegir
-   el mejor de cuatro sobre el conjunto de reporte introduce un sesgo optimista ("maldición del ganador").
-2. **Sin inferencia sobre las diferencias de AUC.** No hay intervalos de confianza ni test pareado entre
-   candidatos.
+1. **Resuelto: selección sobre el test.** La selección ahora usa la validación y el test se mide una vez.
+2. **Resuelto: inferencia sobre las diferencias de AUC.** IC de DeLong, test pareado y ajuste de Holm.
 3. **Disponibilidad de la etiqueta.** El target "default en toda la vida del préstamo" usa desenlaces que no
    se conocían al momento de entrenar; el backtest no respeta la filtración de información.
 4. **Retraso de etiquetas simplificado.** El replay asume que el desenlace se conoce a los 6 meses, menos que
@@ -259,9 +287,10 @@ Aplicando las prácticas de Sinha (cap. 8) dentro de los límites de Free Editio
 
 | Prioridad | Acción | Resuelve |
 |---|---|---|
-| Alta | Seleccionar el modelo con la validación y usar el test una sola vez | 11.1 |
-| Alta | Test pareado de DeLong con intervalos de confianza y regla de parsimonia | 11.2 |
-| Alta | Baseline de scorecard (WoE + regresión logística) en el benchmark | 11.2 |
+| Hecho | Selección en validación, DeLong + Holm + parsimonia, scorecard WoE | 11.1, 11.2 |
+| Alta | AUC sin `grade`, `sub_grade` e `int_rate` para medir el aporte propio del modelo | Dependencia del scoring de Lending Club |
+| Alta | Validación temporal en cascada, estabilidad por cosecha y calibración en el tiempo | Robustez temporal |
+| Alta | Gate relativo champion-challenger con DeLong en vez de ΔAUC puntual (hoy 0.002, menor que el margen práctico) | Coherencia con la regla de selección |
 | Alta | Experimento de ventana de entrenamiento (solo 2012, 2011-2012, todo, todo con pesos por antigüedad) | Trade-off actualidad vs tamaño de muestra |
 | Media | Target de PD a 12 meses con etiquetas disponibles por fecha, o modelo de supervivencia en tiempo discreto que aproveche los préstamos censurados | 11.3, 11.4 |
 | Media | Potencia estadística y pruebas secuenciales en el A/B | Error tipo I al revisar resultados cada mes |
@@ -277,4 +306,8 @@ Aplicando las prácticas de Sinha (cap. 8) dentro de los límites de Free Editio
 - Page, E. S. (1954). Continuous inspection schemes. *Biometrika*, 41(1/2).
 - DeLong, E. R., DeLong, D. M. y Clarke-Pearson, D. L. (1988). Comparing the areas under two or more
   correlated receiver operating characteristic curves. *Biometrics*, 44(3).
+- Sun, X. y Xu, W. (2014). Fast implementation of DeLong's algorithm. *IEEE Signal Processing Letters*, 21(11).
+- Holm, S. (1979). A simple sequentially rejective multiple test procedure. *Scandinavian Journal of
+  Statistics*, 6(2).
+- Siddiqi, N. (2017). *Intelligent Credit Scoring* (2.a ed.). Wiley.
 - Lending Club loan data (2007-2018), Kaggle: https://www.kaggle.com/datasets/wordsforthewise/lending-club

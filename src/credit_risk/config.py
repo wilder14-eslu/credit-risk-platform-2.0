@@ -87,6 +87,8 @@ class UCNames:
     drift_features = property(lambda self: self.fq("drift_by_feature"))
     ab_results = property(lambda self: self.fq("ab_test_results"))
     model_benchmark = property(lambda self: self.fq("model_benchmark"))
+    model_evaluation = property(lambda self: self.fq("model_evaluation"))
+    model_comparison = property(lambda self: self.fq("model_comparison"))
     retrain_events = property(lambda self: self.fq("retrain_events"))
     # Modelo
     model_name = property(lambda self: self.fq("credit_default_model"))

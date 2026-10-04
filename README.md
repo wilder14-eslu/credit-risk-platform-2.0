@@ -22,10 +22,10 @@ con todo el ciclo automatizado como código.
 |---|---|
 | **Problema** | Decidir si aprobar una solicitud de crédito estimando su probabilidad de default (PD) con información disponible solo al momento de solicitar |
 | **Datos** | Lending Club 2007-2018, 151 columnas; se usan 26 variables de la solicitud más 5 derivadas |
-| **Modelo en producción** | CatBoost elegido en un benchmark de 4 algoritmos con Optuna; AUC 0.690 y KS 0.275 en test fuera de tiempo |
+| **Modelo en producción** | Elegido con una regla estadística (DeLong + Holm + parsimonia) entre 4 algoritmos y un scorecard WoE; AUC ~0.69 en test fuera de tiempo |
 | **Plataforma** | Databricks Free Edition: Jobs serverless, Delta Lake, Unity Catalog, MLflow, Model Serving y Databricks Apps |
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
-| **Calidad** | 67 tests (cobertura ~93%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
+| **Calidad** | 82 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
 ## Resultados
 
@@ -41,9 +41,22 @@ de producción con los datos reales:
 
 **Cómo leerlo.** Un AUC cercano a 0.69 es lo esperable en Lending Club cuando solo se usan variables de la
 solicitud; modelos publicados con AUC de 0.90 o más suelen filtrar información posterior al desembolso
-(pagos, recuperaciones). Las diferencias entre los tres GBM son de 0.001 de AUC y no deberían interpretarse
-como significativas sin un test pareado; ese análisis y la comparación formal contra la regresión logística
-están en el [roadmap](#limitaciones-conocidas-y-roadmap).
+(pagos, recuperaciones). Las diferencias entre los tres GBM son de 0.001 de AUC: por eso el pipeline ya no
+elige por el valor puntual.
+
+**Cómo se elige el modelo.** La tabla anterior es la corrida previa a la selección estadística. Desde ahora,
+cada entrenamiento:
+
+1. **Decide en la validación (2013-H1)** y usa el test (2013-H2) una sola vez, para reportar y para los quality gates.
+2. Compara cada candidato contra el mejor con el **test de DeLong** para AUC correlacionados, con **ajuste de
+   Holm** por comparaciones múltiples.
+3. Aplica una **regla de parsimonia**: gana el modelo más simple que no sea peor de forma *significativa y
+   material* (margen práctico de 0.005 de AUC). Si la regresión logística empata en la práctica, gana ella.
+4. Reporta en el test el **AUC de cada candidato con IC 95 %** y todas las comparaciones pareadas, incluido un
+   **scorecard WoE** como referencia regulatoria, con su tabla de Information Value.
+
+La evidencia queda en MLflow (`selection/*.json`), en el informe de cada versión y en las tablas Delta
+`model_evaluation` y `model_comparison`.
 
 ## Arquitectura
 
@@ -122,6 +135,8 @@ flowchart LR
 | **A/B testing real** | Dos variantes en el mismo endpoint, asignación determinista por hash de `loan_id` | La promoción se decide con bootstrap del AUC y test z sobre la morosidad de aprobados |
 | **Trazabilidad** | Cada versión del modelo guarda su commit (`git_sha`) y la versión Delta exacta de sus datos | Cualquier modelo en producción se puede reproducir con *time travel* |
 | **Staging como gate** | Un pipeline completo en staging debe pasar antes de tocar prod | Un error de integración nunca llega a producción |
+| **Selección estadística** | Validación decide, test se mide una vez; DeLong + Holm + margen práctico + parsimonia | Evita la "maldición del ganador" y no premia diferencias de ruido con más complejidad |
+| **Scorecard WoE** | Benchmark tradicional con binning, WoE, IV y puntos (PDO 20, 600 = odds 50:1) | Es la referencia que entiende y exige un regulador |
 
 ## Monitoreo: tipos de drift
 
@@ -148,7 +163,7 @@ Umbrales versionados en [`config/platform.yaml`](config/platform.yaml): cambiarl
 
 ## Ingeniería y confiabilidad
 
-- **Tests:** 67 tests unitarios y de contrato (cobertura ~93%) más un pipeline end-to-end que ejecuta todos los
+- **Tests:** 82 tests unitarios y de contrato (cobertura ~94%) más un pipeline end-to-end que ejecuta todos los
   jobs en local con DuckDB y MLflow sobre SQLite, sin necesidad de Databricks.
 - **Contratos de infraestructura:** los tests verifican que todas las tareas sean serverless, que solo las
   tareas idempotentes tengan reintentos, que staging y prod no compartan esquema ni endpoint y que no haya
@@ -159,16 +174,16 @@ Umbrales versionados en [`config/platform.yaml`](config/platform.yaml): cambiarl
 
 ## Limitaciones conocidas y roadmap
 
-Lo que un revisor exigente señalaría, y cómo se va a abordar:
+**Ya resuelto:** la selección del modelo sobre el test, la falta de inferencia sobre las diferencias de AUC y la
+ausencia de un scorecard de referencia (ver [cómo se elige el modelo](#resultados)).
+
+Lo que un revisor exigente todavía señalaría, y cómo se va a abordar:
 
 | Limitación | Impacto | Próximo paso |
 |---|---|---|
-| El modelo final se elige comparando AUC en el test | Ligero optimismo en el AUC reportado ("maldición del ganador") | Seleccionar con la validación y usar el test una sola vez |
-| Las diferencias de AUC entre candidatos no tienen test estadístico | No se puede afirmar que CatBoost sea mejor que LightGBM o XGBoost | Test pareado de DeLong y regla de parsimonia |
 | El target usa desenlaces que no se conocían al momento de entrenar (préstamos de 2012 terminan en 2015-2017) | El backtest respeta el orden de emisión, pero no la disponibilidad de la etiqueta | Target de PD a 12 meses (estándar Basilea) o modelo de supervivencia con censura |
 | El replay asume que el desenlace se conoce a los 6 meses | Simplificación de la llegada real de etiquetas | Alinear el retraso con la definición del target |
 | Las Databricks Apps requieren login del workspace y en Free Edition se apagan a las 24 horas | No hay demo pública | Demo en Hugging Face Spaces con el modelo `@champion` exportado |
-| Sin baseline de scorecard (WoE + regresión logística) | Falta el punto de comparación estándar en banca | Agregarlo al benchmark |
 
 ## Estructura
 
@@ -181,7 +196,8 @@ Lo que un revisor exigente señalaría, y cómo se va a abordar:
 ├── src/credit_risk/
 │   ├── data/                    # Parser de Lending Club, calidad, datos sintéticos (CI)
 │   ├── features/                # Variables derivadas + preprocesador (viaja con el modelo)
-│   ├── models/                  # Candidatos, métricas, split temporal, modelo pyfunc con SHAP
+│   ├── inference/               # DeLong, Holm, significancia práctica, regla de parsimonia
+│   ├── models/                  # Candidatos, scorecard WoE, métricas, split temporal, pyfunc con SHAP
 │   ├── monitoring/              # Data y concept drift, A/B, replay, política de CT
 │   └── registry/                # MLflow/UC, Model Serving, trazabilidad (lineage)
 ├── jobs/                        # 01 ingesta ... 08 rollback
@@ -198,7 +214,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
 
-pytest                                         # 67 tests, sin Databricks
+pytest                                         # 82 tests, sin Databricks
 python tests/e2e/run_pipeline_locally.py       # ciclo completo con datos sintéticos
 ```
 

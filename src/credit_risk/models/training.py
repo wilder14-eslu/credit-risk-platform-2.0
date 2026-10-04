@@ -11,9 +11,11 @@ import pandas as pd
 
 from credit_risk.config import date_column, input_features, platform_config, target_name
 from credit_risk.features.engineering import Preprocessor, build_features
+from credit_risk.inference.comparison import auc_table, pairwise_delong_comparison, select_parsimonious
 from credit_risk.models import metrics as M
 from credit_risk.models.candidates import available_candidates, build_estimator, suggest_params
 from credit_risk.models.credit_model import CreditRiskModel
+from credit_risk.models.scorecard import CreditScorecard
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +105,22 @@ def fit_model(name: str, params: dict[str, Any], splits: Splits, seed: int = 42)
 
 
 def evaluate(model: CreditRiskModel, splits: Splits) -> dict[str, Any]:
+    """Métricas en train, validación y test.
+
+    La validación decide (selección, tuning, umbral); el test solo se reporta y
+    alimenta los quality gates del modelo ya elegido.
+    """
     out: dict[str, Any] = {"threshold": model.threshold}
-    for prefix, x, y in (("train", splits.x_train, splits.y_train), ("test", splits.x_test, splits.y_test)):
+    for prefix, x, y in (
+        ("train", splits.x_train, splits.y_train),
+        ("val", splits.x_val, splits.y_val),
+        ("test", splits.x_test, splits.y_test),
+    ):
         for k, v in M.classification_metrics(y, model.predict_proba(x), model.threshold).items():
             out[f"{prefix}_{k}"] = v
     out["latency_ms"] = M.inference_latency_ms(model.predict_proba, splits.x_test)
     out.update(M.diagnose_fit(out["train_roc_auc"], out["test_roc_auc"]))
+    out["val_auc_gap"] = float(out["train_roc_auc"] - out["val_roc_auc"])
     return out
 
 
@@ -155,12 +167,14 @@ def choose_final_model(
     splits: Splits,
     n_trials: int,
     timeout: int,
+    best: str | None = None,
 ) -> tuple[str, CreditRiskModel, dict[str, Any], str]:
-    """Elige el modelo final: primero el ganador ajustado con Optuna; si no pasa
+    """Elige el modelo final: `best` (por defecto, la regla estadística de
+    `statistical_selection`) ajustado con Optuna; si no pasa
     los quality gates, el mejor candidato del benchmark (parámetros por defecto)
     que sí los pase. Si ninguno pasa, devuelve el ajustado para que el job falle
     con un motivo claro. Retorna (algoritmo, modelo, métricas, origen)."""
-    best = select_best(table)
+    best = best or select_best(table)
     if n_trials > 0:
         params = tune(best, splits, n_trials, timeout)
         tuned = fit_model(best, params, splits)
@@ -197,12 +211,69 @@ def run_benchmark(
     return table.reset_index(drop=True), models
 
 
-def select_best(table: pd.DataFrame, metric: str | None = None) -> str:
-    metric = metric or platform_config()["training"]["selection_metric"]
+def eligible_candidates(table: pd.DataFrame) -> list[str]:
+    """Candidatos que cumplen latencia y brecha de sobreajuste medida en VALIDACIÓN.
+
+    La brecha se mide contra la validación (no contra el test) para que la
+    selección no mire el test. Si ninguno cumple, se devuelven todos.
+    """
     gates = platform_config()["quality_gates"]
-    eligible = table[(table["latency_ms"] <= gates["max_latency_ms"]) & (table["auc_gap"] <= gates["max_overfit_gap"])]
-    source = eligible if not eligible.empty else table
+    gap = table["val_auc_gap"] if "val_auc_gap" in table else table["auc_gap"]
+    mask = (table["latency_ms"] <= gates["max_latency_ms"]) & (gap <= gates["max_overfit_gap"])
+    source = table[mask] if mask.any() else table
+    return [str(a) for a in source["algorithm"]]
+
+
+def select_best(table: pd.DataFrame, metric: str | None = None) -> str:
+    """Mayor métrica de selección (validación por defecto) entre los elegibles."""
+    metric = metric or platform_config()["training"]["selection_metric"]
+    source = table[table["algorithm"].isin(eligible_candidates(table))]
     return str(source.sort_values(metric, ascending=False).iloc[0]["algorithm"])
+
+
+def statistical_selection(table: pd.DataFrame, models: dict[str, CreditRiskModel], splits: Splits) -> dict[str, Any]:
+    """Selección sobre la VALIDACIÓN con DeLong + Holm + margen práctico + parsimonia.
+
+    Gana el modelo más simple que no sea peor de forma significativa y material que
+    el mejor (ver `inference.comparison.select_parsimonious`). El test no se usa.
+    """
+    cfg = platform_config()["training"]["selection"]
+    scores = {name: models[name].predict_proba(splits.x_val) for name in models}
+    result = select_parsimonious(
+        splits.y_val.to_numpy(),
+        scores,
+        complexity=cfg["complexity"],
+        eligible=eligible_candidates(table),
+        practical_margin=cfg["practical_margin"],
+        alpha=cfg["alpha"],
+    )
+    logger.info("Selección estadística: %s (%s)", result["selected"], result["reason"])
+    return result
+
+
+def fit_scorecard(splits: Splits) -> CreditScorecard:
+    """Scorecard WoE ajustado solo con el periodo de entrenamiento (benchmark de banca)."""
+    return CreditScorecard().fit(build_features(splits.x_train), splits.y_train.to_numpy())
+
+
+def compare_on_test(
+    models: dict[str, CreditRiskModel], splits: Splits, scorecard: CreditScorecard | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """Reporte en el test (una sola vez, sin decidir nada con él).
+
+    AUC de cada candidato con IC de DeLong y todas las comparaciones pareadas con
+    ajuste de Holm. Incluye el scorecard WoE como referencia regulatoria.
+    """
+    cfg = platform_config()["training"]["selection"]
+    y = splits.y_test.to_numpy()
+    scores = {name: model.predict_proba(splits.x_test) for name, model in models.items()}
+    if scorecard is not None:
+        scores["scorecard_woe"] = scorecard.predict_pd(build_features(splits.x_test))
+    ordered = dict(sorted(scores.items(), key=lambda kv: -auc_table(y, {kv[0]: kv[1]})[0]["auc"]))
+    return {
+        "auc": auc_table(y, ordered, alpha=cfg["alpha"]),
+        "pairwise": pairwise_delong_comparison(y, ordered, cfg["practical_margin"], cfg["alpha"]),
+    }
 
 
 def check_quality_gates(result: dict[str, Any], gates: dict | None = None) -> tuple[bool, list[str]]:
@@ -250,9 +321,17 @@ def champion_vs_challenger(
 
 
 def training_report(
-    table: pd.DataFrame, best: str, result: dict[str, Any], importance: pd.Series, periods: dict[str, str]
+    table: pd.DataFrame,
+    best: str,
+    result: dict[str, Any],
+    importance: pd.Series,
+    periods: dict[str, str],
+    selection: dict[str, Any] | None = None,
+    comparison: dict[str, list[dict[str, Any]]] | None = None,
+    iv: list[dict[str, Any]] | None = None,
 ) -> str:
-    cols = ["algorithm", "test_roc_auc", "test_pr_auc", "test_ks", "test_brier", "latency_ms", "fit_diagnosis"]
+    cols = ["algorithm", "val_roc_auc", "test_roc_auc", "test_ks", "test_brier", "latency_ms", "fit_diagnosis"]
+    cols = [c for c in cols if c in table.columns]
     lines = [
         "# Informe de entrenamiento - Credit Risk Platform 2.0 (Lending Club)",
         "",
@@ -276,6 +355,49 @@ def training_report(
     lines += ["", "## Train vs test OOT", "", "| métrica | train | test |", "|---|---|---|"]
     for m in ("roc_auc", "gini", "pr_auc", "ks", "brier", "ece", "recall", "precision"):
         lines.append(f"| {m} | {result[f'train_{m}']:.4f} | {result[f'test_{m}']:.4f} |")
+    if selection:
+        lines += [
+            "",
+            "## Selección estadística (periodo de validación)",
+            "",
+            f"**Regla:** el modelo más simple que no sea peor de forma significativa (DeLong, Holm) y material "
+            f"que el mejor. **Resultado:** {selection['reason']}.",
+            "",
+            "| modelo | AUC val | Δ vs mejor | p Holm | complejidad | elegible | retenido | elegido |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for r in selection["rows"]:
+            p_holm = "n/a" if r["p_holm"] != r["p_holm"] else f"{r['p_holm']:.4f}"
+            lines.append(
+                f"| {r['model']} | {r['auc']:.4f} | {r['delta_vs_best']:+.4f} | {p_holm} | {r['complexity']} | "
+                f"{'sí' if r['eligible'] else 'no'} | {'sí' if r['retained'] else 'no'} | "
+                f"{'**sí**' if r['selected'] else ''} |"
+            )
+    if comparison:
+        lines += [
+            "",
+            "## Test fuera de tiempo: AUC con IC 95 % (DeLong)",
+            "",
+            "| modelo | AUC | IC 95 % |",
+            "|---|---|---|",
+        ]
+        for r in comparison["auc"]:
+            lines.append(f"| {r['model']} | {r['auc']:.4f} | [{r['ci_low']:.4f}, {r['ci_high']:.4f}] |")
+        lines += [
+            "",
+            "## Test fuera de tiempo: comparaciones pareadas (DeLong + Holm)",
+            "",
+            "| A | B | Δ AUC | IC 95 % | p | p Holm | lectura |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for r in comparison["pairwise"]:
+            lines.append(
+                f"| {r['model_a']} | {r['model_b']} | {r['delta']:+.4f} | [{r['ci_low']:+.4f}, {r['ci_high']:+.4f}] | "
+                f"{r['p_value']:.4f} | {r['p_holm']:.4f} | {r['interpretation']} |"
+            )
+    if iv:
+        lines += ["", "## Scorecard WoE: Information Value", "", "| variable | IV | poder |", "|---|---|---|"]
+        lines += [f"| {r['feature']} | {r['iv']:.3f} | {r['strength']} |" for r in iv]
     lines += ["", "## Variables más influyentes (|SHAP| medio)", ""]
     lines += [f"- `{name}`: {value:.4f}" for name, value in importance.head(12).items()]
     return "\n".join(lines) + "\n"

@@ -33,6 +33,40 @@ from credit_risk.monitoring.data_drift import build_reference_profile  # noqa: E
 from credit_risk.registry import mlflow_registry as R  # noqa: E402
 
 
+def write_selection_tables(names, selection: dict, comparison: dict, run_ts, version: str | None) -> None:
+    """Persiste la evidencia estadística: selección (validación) y reporte (test)."""
+    tests = {r["model"]: r for r in comparison["auc"]}
+    rows = [
+        {
+            "split": "validation",
+            "model": r["model"],
+            "auc": r["auc"],
+            "delta_vs_best": r["delta_vs_best"],
+            "p_holm": r["p_holm"],
+            "complexity": r["complexity"],
+            "eligible": r["eligible"],
+            "retained": r["retained"],
+            "selected": r["selected"],
+        }
+        for r in selection["rows"]
+    ]
+    rows += [
+        {
+            "split": "test",
+            "model": name,
+            "auc": r["auc"],
+            "auc_ci_low": r["ci_low"],
+            "auc_ci_high": r["ci_high"],
+            "selected": name == selection["selected"],
+        }
+        for name, r in tests.items()
+    ]
+    evaluation = pd.DataFrame(rows).assign(run_ts=run_ts, registered_version=version)
+    lh.write_pandas(evaluation, names.model_evaluation)
+    pairs = pd.DataFrame(comparison["pairwise"]).assign(run_ts=run_ts, split="test", registered_version=version)
+    lh.write_pandas(pairs, names.model_comparison)
+
+
 def main() -> None:
     lh.configure_logging()
     args = lh.job_args(
@@ -70,26 +104,41 @@ def main() -> None:
         table, models = T.run_benchmark(splits)
         for _, row in table.iterrows():
             R.log_candidate(row["algorithm"], row.to_dict(), parent_run_id=parent.info.run_id)
+        # Selección en VALIDACIÓN: DeLong + Holm + margen práctico + parsimonia.
+        selection = T.statistical_selection(table, models, splits)
+        # Reporte en TEST (una sola vez): IC de DeLong y comparaciones pareadas, con el scorecard WoE.
+        scorecard = T.fit_scorecard(splits) if tcfg.get("scorecard_benchmark", True) else None
+        comparison = T.compare_on_test(models, splits, scorecard)
+        iv = scorecard.iv_table() if scorecard is not None else None
+        mlflow.log_dict(selection, "selection/validation_selection.json")
+        mlflow.log_dict(comparison, "selection/test_comparison.json")
+        if iv:
+            mlflow.log_dict({"iv": iv}, "selection/scorecard_iv.json")
+        mlflow.set_tags({"selection_rule": "delong_holm_parsimony", "selected_by_rule": selection["selected"]})
         best, model, result, origin = T.choose_final_model(
-            table, models, splits, trials, tcfg["optuna_timeout_seconds"]
+            table, models, splits, trials, tcfg["optuna_timeout_seconds"], best=selection["selected"]
         )
         mlflow.set_tags({"final_algorithm": best, "final_model_origin": origin})
         lh.logger.info("Modelo final: %s (%s)", best, origin)
         mlflow.log_metrics({f"best_{k}": v for k, v in result.items() if isinstance(v, float)})
 
+    run_ts = lh.utcnow()
     bench = table.drop(columns=["params"]).copy()
-    bench["run_ts"], bench["selected"] = lh.utcnow(), bench["algorithm"] == best
+    bench["run_ts"], bench["selected"] = run_ts, bench["algorithm"] == best
     passed, reasons = T.check_quality_gates(result)
     if not passed:
         bench["registered_version"] = None
         lh.write_pandas(bench, names.model_benchmark)
+        write_selection_tables(names, selection, comparison, run_ts, None)
         lh.set_task_value("gate_passed", "false")
         raise RuntimeError(f"Quality gate fallido, no se registra el modelo: {reasons}")
 
     reference = {k.replace("test_", ""): v for k, v in result.items() if k.startswith("test_")}
     model.metadata.update(reference_metrics=reference, split_config=split_cfg)
     importance = model.global_importance(splits.x_test.sample(min(2000, len(splits.x_test)), random_state=0))
-    report = T.training_report(table, best, result, importance, splits.periods)
+    report = T.training_report(
+        table, best, result, importance, splits.periods, selection=selection, comparison=comparison, iv=iv
+    )
 
     version = R.log_and_register(
         model,
@@ -112,6 +161,7 @@ def main() -> None:
     R.set_alias(names, CHALLENGER_ALIAS, version)
     bench["registered_version"] = bench["selected"].map(lambda s: version if s else None)
     lh.write_pandas(bench, names.model_benchmark)
+    write_selection_tables(names, selection, comparison, run_ts, version)
 
     profile = build_reference_profile(splits.x_train, model.predict_proba(splits.x_train))
     lh.write_pandas(

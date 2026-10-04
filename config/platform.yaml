@@ -23,7 +23,18 @@ replay:
 
 training:
   candidates: [logistic_regression, xgboost, lightgbm, catboost]
-  selection_metric: test_roc_auc
+  # La validación (2013-H1) decide; el test (2013-H2) se usa una sola vez para
+  # reportar y para los quality gates del modelo ya elegido.
+  selection_metric: val_roc_auc
+  selection:
+    practical_margin: 0.005               # ΔAUC menor se considera prácticamente irrelevante
+    alpha: 0.05                           # sobre p-valores ajustados por Holm
+    complexity:                           # parsimonia: a igualdad práctica gana el más simple
+      logistic_regression: 1
+      xgboost: 2
+      lightgbm: 2
+      catboost: 2
+  scorecard_benchmark: true               # scorecard WoE como referencia regulatoria (no se despliega)
   optuna_trials: 20
   optuna_timeout_seconds: 900
   cost_false_negative: 5.0                 # otorgar a quien incumple

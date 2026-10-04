@@ -76,7 +76,7 @@ def test_split_config_moves_with_as_of():
 
 def test_benchmark_and_gates(splits):
     table, models = T.run_benchmark(splits, ["logistic_regression", "xgboost"])
-    assert table["test_roc_auc"].is_monotonic_decreasing
+    assert table["val_roc_auc"].is_monotonic_decreasing  # la validación decide el orden
     best = T.select_best(table)
     assert best in models
     passed, reasons = T.check_quality_gates(table[table.algorithm == best].iloc[0].to_dict())

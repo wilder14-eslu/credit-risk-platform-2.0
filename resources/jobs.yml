@@ -53,6 +53,7 @@ resources:
               - lightgbm>=4.3
               - catboost>=1.2
               - optuna>=3.6
+              - matplotlib>=3.8
               - scikit-learn>=1.4
               - pyyaml>=6.0
               - databricks-sdk>=0.40

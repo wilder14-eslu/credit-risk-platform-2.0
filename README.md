@@ -25,38 +25,222 @@ con todo el ciclo automatizado como código.
 | **Modelo en producción** | Elegido con una regla estadística (DeLong + Holm + parsimonia) entre 4 algoritmos y un scorecard WoE; AUC ~0.69 en test fuera de tiempo |
 | **Plataforma** | Databricks Free Edition: Jobs serverless, Delta Lake, Unity Catalog, MLflow, Model Serving y Databricks Apps |
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
-| **Calidad** | 82 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
+| **Calidad** | 89 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
-## Resultados
+## Resultados y análisis estadístico
 
-Benchmark sobre el **test fuera de tiempo** (préstamos emitidos en 2013-H2, nunca vistos al entrenar), corrida
-de producción con los datos reales:
+Toda esta sección (cifras, tablas, gráficas y conclusiones) se genera con
+`python scripts/build_report.py --data <CSV de Lending Club>` (o `make report`) sobre los datos reales, con
+el mismo flujo del entrenamiento en producción: el modelo se **elige en la validación** con una regla
+estadística y el **test fuera de tiempo se usa una sola vez** para confirmar. Las cifras completas quedan en
+[`reports/results.json`](reports/results.json) y cada entrenamiento en Databricks registra el mismo reporte en
+MLflow.
 
-| Algoritmo | AUC | KS | Brier | Brecha train-test (AUC) | Diagnóstico |
+<!-- RESULTADOS:INICIO (generado por scripts/build_report.py; no editar a mano) -->
+
+_Generado el 2026-10-04 04:34 UTC desde `accepted_2007_to_2018Q4.csv, préstamos emitidos 2007-2015 (887,429 préstamos)`._
+
+### Resumen de la decisión
+
+| | |
+|---|---|
+| **Modelo elegido** | `catboost` (ajustado con Optuna) |
+| **Por qué** | catboost es el de mayor AUC de validación; empata en la práctica con lightgbm, xgboost (se prefiere por AUC a igual complejidad); logistic_regression es peor de forma significativa y material (regla de parsimonia, decidida en validación) |
+| **AUC en test fuera de tiempo** | **0.6912** IC 95 % [0.6863, 0.6960] · Gini 0.382 |
+| **KS / PR-AUC** | 0.277 [0.270, 0.287] · 0.279 (prevalencia 15.5%) |
+| **Decisión** | Umbral 0.18: aprueba 61.3%, morosidad de aprobados 9.6% (vs 15.5% sin modelo), detecta 61.9% de los defaults |
+| **Quality gates** | aprobados |
+
+### Por qué este modelo
+
+1. **Empate práctico entre los más complejos.** `catboost` no supera de forma material a `lightgbm`, `xgboost`: todas las diferencias son menores al margen práctico de 0.005 de AUC (la de `xgboost` es estadísticamente detectable con este tamaño de muestra, pero no relevante). La elección entre ellos es indiferente para el negocio y se resuelve por complejidad y luego por AUC.
+2. **`logistic_regression` queda descartado en validación**: es peor por 0.0073 de AUC (p Holm < 0.001), una diferencia significativa y mayor al margen práctico.
+3. **Frente a `logistic_regression`** el modelo gana +0.0066 de AUC en test, IC 95 % [+0.0052, +0.0081], p Holm < 0.001: diferencia significativa y material.
+4. **Frente a `scorecard_woe`** el modelo gana +0.0089 de AUC en test, IC 95 % [+0.0073, +0.0105], p Holm < 0.001: diferencia significativa y material.
+5. **El tuning con Optuna aporta poco.** En validación (donde se decide) mejora +0.0003 de AUC (p 0.433); en test +0.0010 (p 0.002): significativa pero prácticamente irrelevante. El techo lo pone la información disponible, no los hiperparámetros.
+6. **Aporte propio vs el scoring de Lending Club.** Sin `grade`, `sub_grade` ni `int_rate` el AUC baja de 0.6912 a 0.6815 (pérdida 0.0097, IC [0.0077, 0.0117], p < 0.001): diferencia significativa y material. Aun así, el modelo conserva 94.9% de su poder discriminante (Gini) solo con variables del solicitante.
+7. **Calibración: ordena bien, pero sobreestima el nivel.** Pendiente 0.99 (ideal 1): la escala relativa es correcta. Intercepto -0.13 y Spiegelhalter p < 0.001: la PD media (17.0%) difiere de la tasa observada (15.5%). Para usar la PD como probabilidad (pricing, pérdida esperada) conviene recalibrar el intercepto con la validación.
+8. **Estabilidad temporal.** El AUC por trimestre se mueve entre 0.663 y 0.697 en 12 cosechas, incluida la producción nunca vista. En 2015Q4 la PD media es 11.8% vs 14.8% observado: la deriva de nivel es la señal que el monitoreo usa para disparar el reentrenamiento.
+
+### 1. Datos y diseño de validación
+
+| Periodo | Préstamos | Rol |
+|---|---|---|
+| Entrenamiento: 2007-06 a 2012-12 | 95,902 | Ajuste de modelos (default 15.7%) |
+| Validación: 2013-01 a 2013-06 | 53,374 | **Decide**: selección, tuning y umbral |
+| Test: 2013-07 a 2013-12 | 81,430 | **Solo reporta** (default 15.5%) |
+
+### 2. Benchmark de candidatos
+
+| Modelo | AUC train | AUC validación | AUC test | Brecha train-val | KS test | Brier test | Latencia (ms) |
+|---|---|---|---|---|---|---|---|
+| catboost | 0.7224 | 0.6932 | 0.6901 | +0.0292 | 0.2744 | 0.1235 | 0.076 |
+| lightgbm | 0.7363 | 0.6925 | 0.6896 | +0.0437 | 0.2745 | 0.1236 | 0.078 |
+| xgboost | 0.7266 | 0.6917 | 0.6892 | +0.0349 | 0.2732 | 0.1235 | 0.088 |
+| logistic_regression | 0.6975 | 0.6860 | 0.6835 | +0.0115 | 0.2682 | 0.1244 | 0.077 |
+
+### 3. Selección estadística en la validación
+
+Regla: cada candidato se compara con el de mayor AUC de validación mediante el **test de DeLong** (mismos préstamos), con **ajuste de Holm**. Se descarta solo si es peor de forma significativa (p Holm < 0.05) **y** material (ΔAUC ≥ 0.005). Entre los que quedan gana el más simple; a igual complejidad, el de mayor AUC.
+
+| Modelo | AUC validación | Δ vs mejor | p Holm | Complejidad | Retenido | Elegido |
+|---|---|---|---|---|---|---|
+| catboost | 0.6932 | +0.0000 | 1.000 | 2 | sí | **sí** |
+| lightgbm | 0.6925 | +0.0007 | 0.243 | 2 | sí |  |
+| xgboost | 0.6917 | +0.0016 | 0.011 | 2 | sí |  |
+| logistic_regression | 0.6860 | +0.0073 | < 0.001 | 1 | no |  |
+
+### 4. Confirmación en el test fuera de tiempo
+
+Los candidatos se comparan en igualdad de condiciones (parámetros por defecto, mismos préstamos). El modelo final es el elegido, después ajustado con Optuna; su efecto se mide al final de esta sección.
+
+![AUC por modelo con IC 95 % de DeLong](docs/figures/auc_ci.png)
+
+![Diferencias pareadas de AUC contra el modelo final](docs/figures/pairwise.png)
+
+<details><summary>Todas las comparaciones pareadas (DeLong + Holm)</summary>
+
+| A | B | Δ AUC | IC 95 % | p | p Holm | Lectura |
+|---|---|---|---|---|---|---|
+| catboost | lightgbm | +0.0005 | [-0.0005, +0.0016] | 0.297 | 0.594 | Sin evidencia de diferencia: modelos prácticamente equivalentes |
+| catboost | xgboost | +0.0009 | [+0.0000, +0.0019] | 0.047 | 0.142 | Sin evidencia de diferencia: modelos prácticamente equivalentes |
+| catboost | logistic_regression | +0.0066 | [+0.0052, +0.0081] | < 0.001 | < 0.001 | Diferencia significativa y material a favor de A |
+| catboost | scorecard_woe | +0.0089 | [+0.0073, +0.0105] | < 0.001 | < 0.001 | Diferencia significativa y material a favor de A |
+| lightgbm | xgboost | +0.0004 | [-0.0004, +0.0012] | 0.302 | 0.594 | Sin evidencia de diferencia: modelos prácticamente equivalentes |
+| lightgbm | logistic_regression | +0.0061 | [+0.0045, +0.0077] | < 0.001 | < 0.001 | Diferencia significativa y material a favor de A |
+| lightgbm | scorecard_woe | +0.0084 | [+0.0066, +0.0102] | < 0.001 | < 0.001 | Diferencia significativa y material a favor de A |
+| xgboost | logistic_regression | +0.0057 | [+0.0041, +0.0073] | < 0.001 | < 0.001 | Diferencia significativa y material a favor de A |
+| xgboost | scorecard_woe | +0.0080 | [+0.0063, +0.0097] | < 0.001 | < 0.001 | Diferencia significativa y material a favor de A |
+| logistic_regression | scorecard_woe | +0.0023 | [+0.0010, +0.0036] | < 0.001 | 0.002 | Estadísticamente significativa pero prácticamente irrelevante |
+
+</details>
+
+**Efecto del tuning con Optuna** (mismo algoritmo, DeLong):
+
+| Periodo | AUC ajustado | AUC por defecto | Δ | p |
+|---|---|---|---|---|
+| validación | 0.6936 | 0.6932 | +0.0003 | 0.433 |
+| test | 0.6912 | 0.6901 | +0.0010 | 0.002 |
+
+### 5. Calibración
+
+![Diagrama de fiabilidad](docs/figures/calibration.png)
+
+| Brier | Brier de referencia (sin modelo) | ECE | Pendiente | Intercepto | Spiegelhalter z | p |
+|---|---|---|---|---|---|---|
+| 0.1233 | 0.1310 | 0.0150 | 0.989 | -0.133 | -10.45 | < 0.001 |
+
+### 6. Discriminación y ordenamiento de cartera
+
+![Curvas ROC y Precision-Recall](docs/figures/roc_pr.png)
+
+![Tasa de default por decil de riesgo](docs/figures/deciles.png)
+
+<details><summary>Tabla de deciles (ganancias y lift)</summary>
+
+| Decil | Préstamos | Default observado | IC 95 % (Wilson) | PD media | Captura acumulada | Lift |
+|---|---|---|---|---|---|---|
+| 1 | 8,143 | 33.8% | [32.8%, 34.8%] | 37.9% | 21.8% | 2.18 |
+| 2 | 8,143 | 25.5% | [24.5%, 26.4%] | 27.3% | 38.2% | 1.64 |
+| 3 | 8,143 | 21.4% | [20.5%, 22.3%] | 22.5% | 52.0% | 1.38 |
+| 4 | 8,143 | 17.3% | [16.5%, 18.2%] | 19.1% | 63.2% | 1.12 |
+| 5 | 8,143 | 15.3% | [14.5%, 16.0%] | 16.4% | 73.0% | 0.98 |
+| 6 | 8,143 | 12.9% | [12.2%, 13.6%] | 14.0% | 81.3% | 0.83 |
+| 7 | 8,143 | 10.8% | [10.2%, 11.5%] | 11.8% | 88.3% | 0.70 |
+| 8 | 8,143 | 8.3% | [7.7%, 8.9%] | 9.6% | 93.6% | 0.53 |
+| 9 | 8,143 | 6.2% | [5.7%, 6.7%] | 7.3% | 97.6% | 0.40 |
+| 10 | 8,143 | 3.7% | [3.3%, 4.1%] | 4.4% | 100.0% | 0.24 |
+
+</details>
+
+### 7. Umbral de decisión por costos
+
+El umbral minimiza el costo esperado en la **validación** con FN:FP = 5:1 (otorgar a quien incumple cuesta más que rechazar a un buen pagador) y se mide aquí en test.
+
+![Costo esperado y trade-off aprobación vs morosidad](docs/figures/threshold.png)
+
+| Umbral | Aprobación | Default entre aprobados | Recall | Precisión | Costo esperado |
 |---|---|---|---|---|---|
-| **CatBoost** (seleccionado) | **0.6902** | **0.2752** | 0.1235 | 0.033 | buen ajuste |
-| LightGBM | 0.6893 | 0.2736 | 0.1236 | 0.047 | buen ajuste |
-| XGBoost | 0.6892 | 0.2738 | 0.1235 | 0.038 | buen ajuste |
-| Regresión logística | 0.6835 | 0.2682 | 0.1244 | 0.014 | buen ajuste |
+| 0.10 | 26.8% | 5.6% | 90.3% | 19.1% | 0.668 |
+| 0.15 | 49.5% | 8.3% | 73.5% | 22.6% | 0.596 |
+| 0.18 **(elegido)** | 61.3% | 9.6% | 61.9% | 24.8% | 0.586 |
+| 0.20 | 68.1% | 10.4% | 54.3% | 26.4% | 0.589 |
+| 0.25 | 81.0% | 12.1% | 36.7% | 30.0% | 0.624 |
+| 0.30 | 89.2% | 13.3% | 23.5% | 33.6% | 0.665 |
 
-**Cómo leerlo.** Un AUC cercano a 0.69 es lo esperable en Lending Club cuando solo se usan variables de la
-solicitud; modelos publicados con AUC de 0.90 o más suelen filtrar información posterior al desembolso
-(pagos, recuperaciones). Las diferencias entre los tres GBM son de 0.001 de AUC: por eso el pipeline ya no
-elige por el valor puntual.
+### 8. Estabilidad por cosecha (incluye producción nunca vista)
 
-**Cómo se elige el modelo.** La tabla anterior es la corrida previa a la selección estadística. Desde ahora,
-cada entrenamiento:
+![AUC y calibración por trimestre de emisión](docs/figures/vintages.png)
 
-1. **Decide en la validación (2013-H1)** y usa el test (2013-H2) una sola vez, para reportar y para los quality gates.
-2. Compara cada candidato contra el mejor con el **test de DeLong** para AUC correlacionados, con **ajuste de
-   Holm** por comparaciones múltiples.
-3. Aplica una **regla de parsimonia**: gana el modelo más simple que no sea peor de forma *significativa y
-   material* (margen práctico de 0.005 de AUC). Si la regresión logística empata en la práctica, gana ella.
-4. Reporta en el test el **AUC de cada candidato con IC 95 %** y todas las comparaciones pareadas, incluido un
-   **scorecard WoE** como referencia regulatoria, con su tabla de Information Value.
+<details><summary>Tabla por trimestre</summary>
 
-La evidencia queda en MLflow (`selection/*.json`), en el informe de cada versión y en las tablas Delta
-`model_evaluation` y `model_comparison`.
+| Trimestre | Préstamos | AUC | IC 95 % | Default observado | PD media |
+|---|---|---|---|---|---|
+| 2013Q1 | 22,706 | 0.6880 | [0.6786, 0.6974] | 15.0% | 16.3% |
+| 2013Q2 | 30,668 | 0.6969 | [0.6892, 0.7046] | 16.3% | 17.4% |
+| 2013Q3 | 37,571 | 0.6891 | [0.6820, 0.6963] | 15.6% | 17.2% |
+| 2013Q4 | 43,859 | 0.6930 | [0.6864, 0.6996] | 15.5% | 16.8% |
+| 2014Q1 | 38,193 | 0.6779 | [0.6704, 0.6853] | 14.2% | 15.0% |
+| 2014Q2 | 37,880 | 0.6633 | [0.6556, 0.6710] | 13.5% | 13.4% |
+| 2014Q3 | 40,595 | 0.6715 | [0.6643, 0.6788] | 13.6% | 13.3% |
+| 2014Q4 | 50,020 | 0.6792 | [0.6728, 0.6856] | 14.5% | 13.1% |
+| 2015Q1 | 56,568 | 0.6747 | [0.6687, 0.6807] | 14.8% | 12.9% |
+| 2015Q2 | 64,222 | 0.6777 | [0.6722, 0.6832] | 15.4% | 12.6% |
+| 2015Q3 | 73,567 | 0.6832 | [0.6780, 0.6885] | 14.6% | 12.2% |
+| 2015Q4 | 88,664 | 0.6821 | [0.6774, 0.6868] | 14.8% | 11.8% |
+
+</details>
+
+### 9. Explicabilidad (SHAP)
+
+![Importancia global SHAP](docs/figures/shap.png)
+
+![Dependencia SHAP de las variables principales](docs/figures/shap_dependence.png)
+
+| Variable | Media de abs(SHAP) | Dirección (Spearman valor-SHAP) |
+|---|---|---|
+| int_rate | 0.2660 | +0.99 (más valor, más riesgo) |
+| term_months | 0.1769 | +0.77 (más valor, más riesgo) |
+| inq_last_6mths | 0.0973 | +0.92 (más valor, más riesgo) |
+| annual_inc | 0.0892 | -0.99 (más valor, menos riesgo) |
+| fico_score | 0.0775 | -0.97 (más valor, menos riesgo) |
+| log_annual_inc | 0.0765 | -0.99 (más valor, menos riesgo) |
+| loan_to_income | 0.0753 | +0.99 (más valor, más riesgo) |
+| purpose | 0.0680 | categórica |
+| revol_util | 0.0557 | +0.99 (más valor, más riesgo) |
+| addr_state | 0.0534 | categórica |
+| installment_to_income | 0.0463 | +0.97 (más valor, más riesgo) |
+| open_acc_ratio | 0.0433 | +0.96 (más valor, más riesgo) |
+
+SHAP describe asociaciones que el modelo aprendió, no efectos causales.
+
+### 10. Ablación: ¿cuánto depende del scoring de Lending Club?
+
+| Variables | AUC test | Δ vs completo | IC 95 % | p (DeLong) |
+|---|---|---|---|---|
+| Todas | 0.6912 | | | |
+| Sin grade, sub_grade, int_rate | 0.6815 | -0.0097 | [-0.0117, -0.0077] | < 0.001 |
+
+### 11. Scorecard WoE e Information Value
+
+![Information Value por variable](docs/figures/iv.png)
+
+El scorecard (benchmark regulatorio) obtiene AUC 0.6812 IC [0.6763, 0.6861] en test.
+
+| Variable | IV | Poder predictivo |
+|---|---|---|
+| sub_grade | 0.327 | fuerte |
+| grade | 0.304 | fuerte |
+| int_rate | 0.303 | fuerte |
+| fico_score | 0.149 | medio |
+| term_months | 0.129 | medio |
+| loan_to_income | 0.100 | débil |
+| installment_to_income | 0.072 | débil |
+| revol_util | 0.058 | débil |
+| inq_last_6mths | 0.054 | débil |
+| purpose | 0.052 | débil |
+
+<!-- RESULTADOS:FIN -->
 
 ## Arquitectura
 
@@ -163,7 +347,7 @@ Umbrales versionados en [`config/platform.yaml`](config/platform.yaml): cambiarl
 
 ## Ingeniería y confiabilidad
 
-- **Tests:** 82 tests unitarios y de contrato (cobertura ~94%) más un pipeline end-to-end que ejecuta todos los
+- **Tests:** 89 tests unitarios y de contrato (cobertura ~94%) más un pipeline end-to-end que ejecuta todos los
   jobs en local con DuckDB y MLflow sobre SQLite, sin necesidad de Databricks.
 - **Contratos de infraestructura:** los tests verifican que todas las tareas sean serverless, que solo las
   tareas idempotentes tengan reintentos, que staging y prod no compartan esquema ni endpoint y que no haya
@@ -175,7 +359,7 @@ Umbrales versionados en [`config/platform.yaml`](config/platform.yaml): cambiarl
 ## Limitaciones conocidas y roadmap
 
 **Ya resuelto:** la selección del modelo sobre el test, la falta de inferencia sobre las diferencias de AUC y la
-ausencia de un scorecard de referencia (ver [cómo se elige el modelo](#resultados)).
+ausencia de un scorecard de referencia (ver [resultados y análisis estadístico](#resultados-y-análisis-estadístico)).
 
 Lo que un revisor exigente todavía señalaría, y cómo se va a abordar:
 
@@ -183,6 +367,7 @@ Lo que un revisor exigente todavía señalaría, y cómo se va a abordar:
 |---|---|---|
 | El target usa desenlaces que no se conocían al momento de entrenar (préstamos de 2012 terminan en 2015-2017) | El backtest respeta el orden de emisión, pero no la disponibilidad de la etiqueta | Target de PD a 12 meses (estándar Basilea) o modelo de supervivencia con censura |
 | El replay asume que el desenlace se conoce a los 6 meses | Simplificación de la llegada real de etiquetas | Alinear el retraso con la definición del target |
+| La PD sobreestima el nivel en el test (17.0 % vs 15.5 %) y lo subestima en 2015 | Ordena bien, pero la PD no se puede usar tal cual como probabilidad | Recalibrar el intercepto con la validación y monitorear la calibración por cosecha |
 | Las Databricks Apps requieren login del workspace y en Free Edition se apagan a las 24 horas | No hay demo pública | Demo en Hugging Face Spaces con el modelo `@champion` exportado |
 
 ## Estructura
@@ -214,7 +399,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
 
-pytest                                         # 82 tests, sin Databricks
+pytest                                         # 89 tests, sin Databricks
 python tests/e2e/run_pipeline_locally.py       # ciclo completo con datos sintéticos
 ```
 

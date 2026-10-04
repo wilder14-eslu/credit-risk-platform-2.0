@@ -14,16 +14,14 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import views
 from databricks_client import DatabricksClient
 
 ENDPOINT = os.getenv("SERVING_ENDPOINT", "credit-risk-lc-endpoint")
 WAREHOUSE_ID = os.getenv("DATABRICKS_WAREHOUSE_ID", "")
 FQ = f"{os.getenv('UC_CATALOG', 'workspace')}.{os.getenv('UC_SCHEMA', 'credit_risk')}"
 
-# Paleta validada: identidad por entidad y colores de estado reservados (siempre con texto/ícono).
-SERIES = {"observed": "#2a78d6", "predicted": "#eb6834"}
-STATUS = {"estable": "#0ca30c", "warning": "#fab219", "alerta": "#d03b3b"}
-ICON = {"estable": "✅", "warning": "⚠️", "alerta": "🛑", "critico": "🛑", "sin_datos": "ℹ️"}
+STATUS = views.STATUS
 
 st.set_page_config(page_title="Credit Risk Platform 2.0", page_icon="💳", layout="wide")
 
@@ -34,15 +32,17 @@ def client() -> DatabricksClient:
 
 
 @st.cache_data(ttl=120)
-def query(sql: str) -> pd.DataFrame:
+def _query(sql: str) -> pd.DataFrame:
     return pd.DataFrame(client().sql(WAREHOUSE_ID, sql))
 
 
-def num(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    for c in cols:
-        if c in df:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df
+def query(sql: str) -> pd.DataFrame:
+    """Una tabla que todavía no existe (p. ej. sin corridas de monitoreo) se muestra como vacía."""
+    try:
+        return _query(sql)
+    except Exception as exc:
+        st.caption(f"No se pudo leer una tabla: {exc}")
+        return pd.DataFrame()
 
 
 def page_scoring() -> None:
@@ -150,107 +150,27 @@ def page_monitoring() -> None:
     if not WAREHOUSE_ID:
         st.warning("La app no tiene el recurso sql-warehouse configurado.")
         return
-    mon = query(f"SELECT * FROM {FQ}.monitoring_metrics ORDER BY clock_month")
-    if mon.empty:
-        st.info("Aún no hay corridas de monitoreo. Ejecuta el job credit-risk-production-monitoring.")
-        return
-    mon = num(mon, ["roc_auc", "prediction_psi", "default_rate_observed", "default_rate_predicted", "auc_drop"])
-    mon["clock_month"] = pd.to_datetime(mon["clock_month"])
-    last = mon.iloc[-1]
-    sev = str(last["severity"])
-    st.subheader(f"{ICON.get(sev, 'ℹ️')} Último chequeo ({last['clock_month']:%Y-%m}): {sev}")
-    for reason in json.loads(last["reasons"] or "[]"):
-        st.write(f"- {reason}")
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=mon["clock_month"],
-            y=mon["roc_auc"],
-            mode="lines+markers",
-            name="AUC en producción",
-            line=dict(color=SERIES["observed"], width=2),
-            marker=dict(size=8),
-        )
+    q = views.queries(FQ)
+    views.render_monitoring(
+        query(q["monitoring_metrics"]),
+        query(q["drift_by_feature"]),
+        query(q["ab_test_results"]),
+        query(q["retrain_events"]),
     )
-    fig.update_layout(
-        title="AUC con desenlaces reales (concept drift)",
-        hovermode="x unified",
-        yaxis_title="ROC-AUC",
-        showlegend=False,
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=mon["clock_month"],
-            y=mon["default_rate_observed"],
-            name="Default observado",
-            line=dict(color=SERIES["observed"], width=2),
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=mon["clock_month"],
-            y=mon["default_rate_predicted"],
-            name="Default predicho",
-            line=dict(color=SERIES["predicted"], width=2, dash="dash"),
-        )
-    )
-    fig.update_layout(
-        title="Calibración: tasa de default observada vs predicha", hovermode="x unified", yaxis_tickformat=".0%"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    drift = query(f"""SELECT * FROM {FQ}.drift_by_feature
-                      WHERE run_id = (SELECT run_id FROM {FQ}.monitoring_metrics ORDER BY run_ts DESC LIMIT 1)""")
-    if not drift.empty:
-        drift = num(drift, ["psi", "ks_pvalue"]).sort_values("psi")
-        fig = go.Figure(
-            go.Bar(
-                x=drift["psi"],
-                y=drift["feature"],
-                orientation="h",
-                marker_color=drift["status"].map(STATUS).fillna(STATUS["estable"]),
-                customdata=drift["status"],
-                hovertemplate="%{y}: PSI %{x:.3f} (%{customdata})<extra></extra>",
-            )
-        )
-        fig.add_vline(x=0.10, line_dash="dot", annotation_text="warning 0.10")
-        fig.add_vline(x=0.25, line_dash="dot", annotation_text="alerta 0.25")
-        fig.update_layout(title="Data drift por variable (PSI vs entrenamiento)", height=620)
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(drift[["feature", "kind", "psi", "ks_pvalue", "status"]], hide_index=True)
-
-    st.subheader("A/B testing champion vs challenger")
-    ab = query(f"SELECT * FROM {FQ}.ab_test_results ORDER BY run_ts DESC LIMIT 10")
-    if ab.empty:
-        st.caption("Sin evaluaciones A/B todavía.")
-    else:
-        st.dataframe(ab, hide_index=True)
-    st.subheader("Reentrenamientos disparados por el monitoreo")
-    rt = query(f"SELECT * FROM {FQ}.retrain_events ORDER BY event_ts DESC LIMIT 10")
-    if rt.empty:
-        st.caption("Ninguno todavía.")
-    else:
-        st.dataframe(rt, hide_index=True)
 
 
 def page_models() -> None:
     st.header("Benchmark de modelos (último entrenamiento)")
     if not WAREHOUSE_ID:
+        st.warning("La app no tiene el recurso sql-warehouse configurado.")
         return
-    bench = query(f"""SELECT * FROM {FQ}.model_benchmark
-                      WHERE run_ts = (SELECT max(run_ts) FROM {FQ}.model_benchmark)""")
-    if bench.empty:
-        st.caption("Sin entrenamientos registrados.")
-    else:
-        st.dataframe(bench, hide_index=True)
     try:
-        st.json(client().served_versions(ENDPOINT))
+        served = client().served_versions(ENDPOINT)
     except Exception as exc:
         st.caption(f"Endpoint no disponible: {exc}")
+        served = None
+    q = views.queries(FQ)
+    views.render_models(query(q["model_benchmark"]), query(q["model_evaluation"]), served)
 
 
 PAGES = {"Scoring": page_scoring, "Monitoreo": page_monitoring, "Modelos": page_models}

@@ -7,12 +7,16 @@
 ![Databricks](https://img.shields.io/badge/Databricks-Free%20Edition-FF3621?logo=databricks&logoColor=white)
 ![MLflow](https://img.shields.io/badge/MLflow-Unity%20Catalog-0194E2?logo=mlflow&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
+[![Demo](https://img.shields.io/badge/demo-en%20vivo-FF4B4B?logo=streamlit&logoColor=white)](https://credit-risk02.streamlit.app)
 
 Plataforma end-to-end de **riesgo crediticio** (probabilidad de default) sobre **2.26 millones de préstamos
 reales de Lending Club (2007-2018)**, desplegada 100% en **Databricks Free Edition**: desde el planteamiento
 del problema hasta el despliegue, el monitoreo en producción, el A/B testing y el reentrenamiento continuo,
 con todo el ciclo automatizado como código.
 
+> **Demo en vivo:** [credit-risk02.streamlit.app](https://credit-risk02.streamlit.app) (scoring con el modelo en producción,
+> monitoreo, A/B testing, benchmark y análisis estadístico; sin login).
+>
 > **Reporte técnico completo:** [docs/REPORTE_TECNICO.md](docs/REPORTE_TECNICO.md) (metodología, resultados,
 > decisiones estadísticas y limitaciones).
 
@@ -25,6 +29,8 @@ con todo el ciclo automatizado como código.
 | **Modelo en producción** | Elegido con una regla estadística (DeLong + Holm + parsimonia) entre 4 algoritmos y un scorecard WoE; AUC ~0.69 en test fuera de tiempo |
 | **Plataforma** | Databricks Free Edition: Jobs serverless, Delta Lake, Unity Catalog, MLflow, Model Serving y Databricks Apps |
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
+| **Producción** | Replay de la originación 2014-2015: el monitoreo detectó concept drift y data drift, disparó dos reentrenamientos y un A/B en producción decidió **no** promover al challenger por falta de evidencia |
+| **Demo** | [Streamlit Community Cloud](https://credit-risk02.streamlit.app), autocontenida: el champion exportado de Unity Catalog y una foto de las tablas de producción |
 | **Calidad** | 100 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
 ## Resultados y análisis estadístico
@@ -242,6 +248,46 @@ El scorecard (benchmark regulatorio) obtiene AUC 0.6812 IC [0.6763, 0.6861] en t
 
 <!-- RESULTADOS:FIN -->
 
+## Resultados en producción (replay 2014-2015)
+
+La "producción" re-juega mes a mes los préstamos reales emitidos en 2014-2015, que el modelo nunca vio. Las
+etiquetas llegan con 6 meses de retraso, como en un banco. Cifras de la corrida en Databricks del 04/10/2026
+(también visibles en la página *Monitoreo* de la [demo](https://credit-risk02.streamlit.app)).
+
+**Modelo en producción:** `@champion` v3, `lightgbm`, AUC 0.6907 en el test fuera de tiempo, umbral 0.18.
+El reporte reproducible de arriba eligió `catboost`: ambos pertenecen al grupo en empate práctico (diferencia de
+AUC menor al margen de 0.005) y la elección final entre ellos depende del tuning, que no es determinista entre
+corridas. Es la regla de selección funcionando como se diseñó: entre modelos equivalentes, cualquiera es válido.
+
+### Monitoreo
+
+| Reloj | Préstamos | Con desenlace | AUC | Default observado | PD media | Severidad | Motivo |
+|---|---|---|---|---|---|---|---|
+| 2014-06 | 12,000 | 0 | - | - | - | estable | solo data drift (aún no hay desenlaces) |
+| 2014-12 | 12,000 | 8,191 | 0.665 | 13.9 % | 13.8 % | **alerta** | concept drift (Page-Hinkley): el AUC cae 0.026 bajo la referencia |
+| 2015-06 | 9,558 | 8,030 | 0.677 | 14.9 % | 13.2 % | estable | |
+| 2015-12 | 9,715 | 6,411 | 0.693 | 15.2 % | 12.8 % | **alerta** | data drift en `dti`, `purpose` e `initial_list_status` |
+
+- **El concept drift disparó el reentrenamiento continuo:** la alerta de 2014-12 generó el challenger v4, que
+  pasó la validación offline y entró al A/B. El AUC del champion luego se recuperó por sí solo (0.677 y 0.693),
+  señal de que parte de la caída fue variación entre cosechas y no un deterioro permanente.
+- **La calibración se degrada aunque el AUC se recupera:** la PD media baja de 13.8 % a 12.8 % mientras el
+  default observado sube de 13.9 % a 15.2 %. El modelo sigue ordenando bien el riesgo, pero subestima su nivel.
+- **El drift más fuerte no es del cliente sino de la política:** `initial_list_status` tiene PSI 3.0 porque en
+  2015 Lending Club pasó a vender casi todos sus préstamos como *whole loans*. Le siguen `purpose` (0.34) y
+  `dti` (0.25).
+
+### A/B testing champion vs challenger
+
+| Reloj | Champion v3 | Challenger v4 | AUC champion | AUC challenger | Diferencia (IC 95 %) | Decisión |
+|---|---|---|---|---|---|---|
+| 2015-06 | 0 | 0 | - | - | - | continuar: aún no hay desenlaces del challenger |
+| 2015-12 | 12,905 | 3,291 | 0.6807 | 0.6768 | -0.0039 [-0.031, +0.023], p = 0.61 | **detener** |
+
+El challenger recibió el 20 % del tráfico durante el test. Al cierre no hubo diferencia significativa en AUC ni en
+la morosidad de los aprobados (11.2 % vs 12.3 %, p = 0.13), así que el sistema eliminó el challenger y devolvió el
+100 % del tráfico al champion: **no se cambia un modelo en producción sin evidencia de que el nuevo es mejor.**
+
 ## Arquitectura
 
 ```mermaid
@@ -273,6 +319,12 @@ flowchart LR
         dash -->|SQL warehouse| log
     end
 
+    subgraph PUB["Demo pública"]
+        demo["Streamlit Community Cloud<br/>champion exportado + foto de producción"]
+    end
+
+    reg -->|workflow Demo pública| demo
+
     prod --> DBX
     client(["Cliente / core bancario"]) --> api
 ```
@@ -288,6 +340,7 @@ flowchart LR
 | Orquestación | Databricks Jobs con `condition_task` y `run_job_task` (monitoreo dispara reentrenamiento) |
 | Infraestructura como código | Databricks Asset Bundles (`databricks.yml`, `resources/jobs.yml`) |
 | CI/CD | GitHub Actions: dev, gate de integración en staging, prod con aprobación |
+| Demo pública | Streamlit Community Cloud (`apps/demo`): el workflow *Demo pública* exporta el `@champion` y una foto de las tablas de monitoreo a la rama `demo`; comparte las páginas con el dashboard (`apps/dashboard/views.py`) |
 
 ## Ciclo de vida cubierto
 
@@ -358,17 +411,38 @@ Umbrales versionados en [`config/platform.yaml`](config/platform.yaml): cambiarl
 
 ## Limitaciones conocidas y roadmap
 
-**Ya resuelto:** la selección del modelo sobre el test, la falta de inferencia sobre las diferencias de AUC y la
-ausencia de un scorecard de referencia (ver [resultados y análisis estadístico](#resultados-y-análisis-estadístico)).
+**Ya resuelto:** la selección del modelo sobre el test, la falta de inferencia sobre las diferencias de AUC, la
+ausencia de un scorecard de referencia (ver [resultados y análisis estadístico](#resultados-y-análisis-estadístico))
+y la falta de una demo pública.
 
-Lo que un revisor exigente todavía señalaría, y cómo se va a abordar:
+Lo que un revisor exigente todavía señalaría, y cómo se abordaría:
+
+### Estadística y modelo
 
 | Limitación | Impacto | Próximo paso |
 |---|---|---|
-| El target usa desenlaces que no se conocían al momento de entrenar (préstamos de 2012 terminan en 2015-2017) | El backtest respeta el orden de emisión, pero no la disponibilidad de la etiqueta | Target de PD a 12 meses (estándar Basilea) o modelo de supervivencia con censura |
+| El target usa desenlaces que no se conocían al momento de entrenar (préstamos de 2012 terminan en 2015-2017) | El backtest respeta el orden de emisión, pero no la disponibilidad de la etiqueta | Target de PD a 12 meses (estándar Basilea) o modelo de supervivencia en tiempo discreto que aproveche los préstamos censurados |
+| La PD sobreestima el nivel en el test (17.0 % vs 15.5 %) y lo subestima en producción (12.8 % vs 15.2 % en 2015-12) | Ordena bien el riesgo, pero la PD no se puede usar tal cual para provisiones o precios | Recalibrar el intercepto (o Platt/isotónica) y monitorear la calibración por cosecha con su propio umbral de alerta |
+| El AUC ronda 0.69 | Es el techo habitual con solo variables de la solicitud; el tuning aportó +0.0003 en validación | Más información (buró, comportamiento), no más hiperparámetros |
+| El champion en producción (`lightgbm`) no es el del reporte reproducible (`catboost`) | Ambos están en empate práctico, pero el README y la demo pueden mostrar modelos distintos | Generar el reporte desde el artefacto `report/` que MLflow guarda con cada champion |
+
+### Monitoreo y experimentación
+
+| Limitación | Impacto | Próximo paso |
+|---|---|---|
+| El A/B tuvo poca potencia: 3,291 préstamos con desenlace en el challenger dan un IC de ±0.027 de AUC | Solo podía detectar diferencias grandes; "detener" significa "sin evidencia", no "son iguales" | Análisis de potencia antes del test (tamaño de muestra para detectar 0.005) y ajustar tráfico o duración |
+| El PSI alerta por cambios de política comercial (`initial_list_status`, PSI 3.0) igual que por cambios del cliente | Reentrenamientos que no siempre corrigen un problema del modelo | Separar variables de política y de cliente, y corregir por comparaciones múltiples (Benjamini-Hochberg) |
 | El replay asume que el desenlace se conoce a los 6 meses | Simplificación de la llegada real de etiquetas | Alinear el retraso con la definición del target |
-| La PD sobreestima el nivel en el test (17.0 % vs 15.5 %) y lo subestima en 2015 | Ordena bien, pero la PD no se puede usar tal cual como probabilidad | Recalibrar el intercepto con la validación y monitorear la calibración por cosecha |
-| Las Databricks Apps requieren login del workspace y en Free Edition se apagan a las 24 horas | La API y el dashboard no son públicos | Resuelto con la demo pública en Streamlit Community Cloud (`apps/demo`), que lleva el `@champion` exportado |
+| Los datos de producción terminan en 2015-12 | El último reentrenamiento (por data drift en 2015-12) ya no tiene meses para un A/B | Extender el replay a 2016-2018 con el target a 12 meses |
+
+### Plataforma
+
+| Limitación | Impacto | Próximo paso |
+|---|---|---|
+| Las Databricks Apps requieren login del workspace y en Free Edition se apagan a las 24 horas | La API y el dashboard en vivo no son públicos | Mitigado con la demo pública; la API pública podría ir en un servicio gratuito con el mismo modelo exportado |
+| La demo es una foto, no una vista en vivo | Muestra el estado de la última publicación | Correr el workflow *Demo pública* tras cada cambio en producción (y reiniciar la app en Streamlit Cloud) |
+| Free Edition: un solo SQL warehouse 2X-Small, máximo 5 tareas concurrentes, sin GPU ni tablas online | Entrenamientos y monitoreo secuenciales; staging y prod comparten la cuota | En un workspace pagado: clusters dedicados por entorno y Online Tables para features en tiempo real |
+| El token de Databricks de GitHub Actions vence | El CD y el workflow de la demo dejan de funcionar | Renovarlo antes de su vencimiento o usar un service principal con OAuth |
 
 ## Estructura
 
@@ -387,7 +461,9 @@ Lo que un revisor exigente todavía señalaría, y cómo se va a abordar:
 │   └── registry/                # MLflow/UC, Model Serving, trazabilidad (lineage)
 ├── jobs/                        # 01 ingesta ... 08 rollback
 ├── apps/api/                    # Databricks App: FastAPI
-├── apps/dashboard/              # Databricks App: Streamlit
+├── apps/dashboard/              # Databricks App: Streamlit (views.py compartido con la demo)
+├── apps/demo/                   # Demo pública en Streamlit Community Cloud
+├── scripts/                     # build_report.py (análisis estadístico) y build_demo.py (demo pública)
 ├── tests/                       # Tests unitarios y de contrato + tests/e2e (pipeline completo y smoke check)
 └── docs/                        # Reporte técnico, datos y despliegue
 ```
@@ -401,6 +477,9 @@ pip install -r requirements-dev.txt
 
 pytest                                         # 100 tests, sin Databricks
 python tests/e2e/run_pipeline_locally.py       # ciclo completo con datos sintéticos
+
+python scripts/build_demo.py --model ruta/credit_model.joblib   # demo pública con un modelo exportado
+streamlit run build/demo/app.py
 ```
 
 En Databricks (guía completa en [DEPLOYMENT.md](docs/DEPLOYMENT.md)):
@@ -416,6 +495,7 @@ databricks bundle run -t dev production_monitoring --params months=6
 - [Reporte técnico](docs/REPORTE_TECNICO.md): planteamiento, datos, metodología, resultados, limitaciones.
 - [Datos](docs/DATA.md): perfil del archivo, sesgo de censura y cómo subirlo.
 - [Despliegue](docs/DEPLOYMENT.md): entornos, CI/CD, confiabilidad y límites de Free Edition.
+- [Demo pública](apps/demo/README.md): cómo se arma, se publica y se actualiza.
 
 > Versión anterior (Docker + PostgreSQL + Prefect, dataset Give Me Some Credit):
 > [credit-risk-ml-platform](https://github.com/wilder14-eslu/credit-risk-ml-platform).

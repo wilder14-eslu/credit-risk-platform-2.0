@@ -1,0 +1,9 @@
+{
+ "source": "Unity Catalog workspace.credit_risk.credit_default_model@champion",
+ "version": "3",
+ "test_roc_auc": "0.690740",
+ "git_sha": "e81ccb2",
+ "algorithm": "lightgbm",
+ "threshold": 0.18,
+ "exported_at": "2026-10-04 09:24 UTC"
+}

@@ -1,0 +1,12 @@
+{
+ "exported_at": "2026-10-04 09:24 UTC",
+ "source": "workspace.credit_risk",
+ "rows": {
+  "monitoring_metrics": 4,
+  "drift_by_feature": 27,
+  "ab_test_results": 2,
+  "retrain_events": 2,
+  "model_benchmark": 4,
+  "model_evaluation": 9
+ }
+}

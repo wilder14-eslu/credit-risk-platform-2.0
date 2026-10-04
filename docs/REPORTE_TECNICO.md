@@ -297,7 +297,7 @@ Aplicando las prácticas de Sinha (cap. 8) dentro de los límites de Free Editio
 | Media | Target de PD a 12 meses con etiquetas disponibles por fecha, o modelo de supervivencia en tiempo discreto que aproveche los préstamos censurados | 11.3, 11.4 |
 | Media | Potencia estadística y pruebas secuenciales en el A/B | Error tipo I al revisar resultados cada mes |
 | Media | Corrección por comparaciones múltiples en el drift (Benjamini-Hochberg) y Wasserstein como tamaño de efecto | Falsos positivos con muestras grandes |
-| Media | Demo pública en Hugging Face Spaces con el `@champion` exportado | 11.8 |
+| Hecho | Demo pública en Streamlit Community Cloud con el `@champion` exportado (`apps/demo`, workflow *Demo pública*) | 11.8 |
 | Baja | Análisis de equidad | 11.7 |
 
 ## 13. Referencias

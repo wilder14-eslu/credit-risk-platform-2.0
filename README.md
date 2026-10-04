@@ -368,7 +368,7 @@ Lo que un revisor exigente todavía señalaría, y cómo se va a abordar:
 | El target usa desenlaces que no se conocían al momento de entrenar (préstamos de 2012 terminan en 2015-2017) | El backtest respeta el orden de emisión, pero no la disponibilidad de la etiqueta | Target de PD a 12 meses (estándar Basilea) o modelo de supervivencia con censura |
 | El replay asume que el desenlace se conoce a los 6 meses | Simplificación de la llegada real de etiquetas | Alinear el retraso con la definición del target |
 | La PD sobreestima el nivel en el test (17.0 % vs 15.5 %) y lo subestima en 2015 | Ordena bien, pero la PD no se puede usar tal cual como probabilidad | Recalibrar el intercepto con la validación y monitorear la calibración por cosecha |
-| Las Databricks Apps requieren login del workspace y en Free Edition se apagan a las 24 horas | No hay demo pública | Demo en Hugging Face Spaces con el modelo `@champion` exportado |
+| Las Databricks Apps requieren login del workspace y en Free Edition se apagan a las 24 horas | La API y el dashboard no son públicos | Resuelto con la demo pública en Streamlit Community Cloud (`apps/demo`), que lleva el `@champion` exportado |
 
 ## Estructura
 

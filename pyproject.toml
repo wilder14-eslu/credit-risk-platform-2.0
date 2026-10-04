@@ -23,7 +23,7 @@ where = ["src"]
 [tool.ruff]
 line-length = 120
 target-version = "py310"
-src = ["src", "apps/api", "apps/dashboard"]
+src = ["src", "apps/api", "apps/dashboard", "apps/hf_space"]
 extend-exclude = [".venv", "mlruns"]
 
 [tool.ruff.lint]

@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import RedirectResponse
 
 from ab import assign_variant
 from databricks_client import DatabricksClient
@@ -63,6 +64,11 @@ def create_app(client=None, sink=None) -> FastAPI:
             except Exception as exc:
                 logger.warning("No se pudo leer el endpoint: %s", exc)
         return state["versions"]
+
+    @app.get("/", include_in_schema=False)
+    def root() -> RedirectResponse:
+        """La raíz lleva a la documentación interactiva (Swagger)."""
+        return RedirectResponse(url="/docs")
 
     @app.get("/health")
     def health() -> dict:

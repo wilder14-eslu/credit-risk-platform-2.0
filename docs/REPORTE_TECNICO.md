@@ -166,38 +166,36 @@ categórica se suman), y bandas de riesgo: A (PD < 5%), B (< 10%), C (< 20%), D 
 
 ## 7. Resultados
 
-Corrida de producción sobre los datos reales, test fuera de tiempo (2013-H2):
+Las cifras, tablas y gráficas completas están en la sección
+[Resultados y análisis estadístico del README](../README.md#resultados-y-análisis-estadístico), generada por
+`scripts/build_report.py` sobre los 887,429 préstamos reales emitidos entre 2007 y 2015 (todas las cifras en
+[`reports/results.json`](../reports/results.json)). Lo esencial:
 
-| Algoritmo | AUC | KS | Brier | Brecha train-test |
-|---|---|---|---|---|
-| **CatBoost** (seleccionado) | **0.6902** | **0.2752** | 0.1235 | 0.0327 |
-| LightGBM | 0.6893 | 0.2736 | 0.1236 | 0.0467 |
-| XGBoost | 0.6892 | 0.2738 | 0.1235 | 0.0376 |
-| Regresión logística | 0.6835 | 0.2682 | 0.1244 | 0.0140 |
+| Hallazgo | Evidencia |
+|---|---|
+| **Modelo elegido: CatBoost**, ajustado con Optuna | AUC test 0.6912, IC 95 % [0.6863, 0.6960]; KS 0.277; Gini 0.382 |
+| Se elige en **validación** por la regla de parsimonia | CatBoost tiene el mayor AUC de validación (0.6932); LightGBM y XGBoost quedan a menos de 0.002 (empate práctico); la regresión logística es peor por 0.0073 (p Holm < 0.001) |
+| El test **confirma** sin decidir | CatBoost vs LightGBM y XGBoost: sin diferencia tras Holm; vs regresión logística +0.0066 [+0.0052, +0.0081] y vs scorecard WoE +0.0089 [+0.0073, +0.0105], ambas significativas y materiales |
+| El **tuning** apenas importa | +0.0003 de AUC en validación (p 0.43); +0.0010 en test: significativo pero irrelevante |
+| **Aporte propio** frente al scoring de Lending Club | Sin `grade`, `sub_grade` e `int_rate` el AUC baja a 0.6815 (pérdida 0.0097, p < 0.001); se conserva el 95 % del Gini |
+| **Ordenamiento** de cartera | Default de 33.8 % en el decil más riesgoso vs 3.7 % en el más seguro; el 10 % más riesgoso concentra el 21.8 % de los defaults |
+| **Decisión** con umbral 0.18 (costo 5:1, elegido en validación) | Aprueba 61.3 %, morosidad entre aprobados 9.6 % (vs 15.5 % sin modelo), detecta 61.9 % de los defaults |
+| **Calibración**: ordena bien, sobreestima el nivel | Pendiente 0.99, intercepto −0.13, Spiegelhalter p < 0.001: PD media 17.0 % vs 15.5 % observada |
+| **Estabilidad** por cosecha | AUC entre 0.663 y 0.697 en 12 trimestres (2013-2015); en 2015 la PD media cae a ~12 % con default observado ~15 %: deriva de nivel que motiva el reentrenamiento |
 
 **Interpretación.**
 
-- **El desempeño es coherente con el dataset.** Con solo variables de la solicitud, la literatura y la
-  práctica sitúan el AUC de Lending Club alrededor de 0.70. Un AUC de 0.90 o más en este dataset es una señal
-  casi segura de leakage.
-- **Los tres GBM son estadísticamente indistinguibles a simple vista.** Diferencias de 0.001 de AUC están
-  dentro del error de muestreo esperable para un test de este tamaño. Elegir CatBoost por el valor puntual no
-  está respaldado por una prueba formal.
-- **La regresión logística pierde 0.0067 de AUC y 0.007 de KS**, pero tiene la menor brecha de sobreajuste,
-  es totalmente interpretable y es el estándar regulatorio en banca. Si esa diferencia resulta significativa
-  y relevante para el negocio es una pregunta abierta (sección 12).
-- **La calibración es prácticamente idéntica** entre los cuatro (Brier entre 0.1235 y 0.1244).
-
-> Esta tabla corresponde a la corrida anterior a la selección estadística, cuando el modelo se elegía por el
-> AUC puntual del test. Desde la siguiente corrida, el informe de cada versión incluye la selección en
-> validación, el AUC de cada candidato con IC 95 % de DeLong, las comparaciones pareadas con Holm y el
-> Information Value del scorecard (tablas `model_evaluation` y `model_comparison`).
-
-**Una observación que el scorecard hace explícita.** `grade`, `sub_grade` e `int_rate` son **salidas del modelo
-interno de Lending Club** (la tasa se fija según el grado). Es esperable que su IV supere 0.5, el umbral que
-la regla habitual marca para revisar fugas. No son una fuga temporal, porque se conocen al aprobar, pero
-significan que el modelo se apoya en parte en el scoring de Lending Club. Medir el AUC sin esas tres
-variables cuantifica cuánto aporta el modelo propio.
+- **El desempeño es coherente con el dataset.** Con solo variables de la solicitud, el AUC de Lending Club se
+  sitúa alrededor de 0.70. Un AUC de 0.90 o más en este dataset es una señal casi segura de leakage.
+- **La elección entre los GBM es indiferente para el negocio.** La regla lo hace explícito: gana CatBoost por
+  tener el mayor AUC de validación a igual complejidad, no porque supere de forma material a los otros dos.
+- **La complejidad sí está justificada frente a los modelos lineales.** La ventaja sobre la regresión logística
+  y el scorecard es significativa y supera el margen práctico de 0.005 tanto en validación como en test.
+- **`grade`, `sub_grade` e `int_rate` son salidas del scoring interno de Lending Club.** Su IV es de 0.30 a
+  0.33 ("fuerte", por debajo del umbral de 0.5 que la regla habitual marca para revisar fugas). No son una fuga
+  temporal, porque se conocen al aprobar, y la ablación muestra que el modelo no depende solo de ellas.
+- **La PD necesita recalibración de nivel** antes de usarse como probabilidad (pricing o pérdida esperada),
+  aunque el ordenamiento, que es lo que usa la decisión de aprobar o rechazar, es correcto.
 
 ## 8. Arquitectura y despliegue
 
@@ -279,24 +277,28 @@ Aplicando las prácticas de Sinha (cap. 8) dentro de los límites de Free Editio
 5. **Sesgo de selección.** El modelo solo aprende de préstamos **aprobados** (los rechazados no tienen desenlace); nunca vio a los
    rechazados (problema de *reject inference*). Esto también afecta al A/B, que solo observa desenlaces de
    aprobados.
-6. **Equidad no evaluada.** No se midió impacto dispar por grupos (por ejemplo, por estado o nivel de
+6. **Calibración en nivel.** La PD sobreestima la tasa observada en el test (17.0 % vs 15.5 %) y la
+   subestima en 2015 (~12 % vs ~15 %). El ordenamiento es correcto (pendiente ~1), pero el nivel se desplaza
+   con el tiempo.
+7. **Equidad no evaluada.** No se midió impacto dispar por grupos (por ejemplo, por estado o nivel de
    ingreso).
-7. **Sin demo pública.** Las Databricks Apps requieren login del workspace.
+8. **Sin demo pública.** Las Databricks Apps requieren login del workspace.
 
 ## 12. Próximos pasos
 
 | Prioridad | Acción | Resuelve |
 |---|---|---|
 | Hecho | Selección en validación, DeLong + Holm + parsimonia, scorecard WoE | 11.1, 11.2 |
-| Alta | AUC sin `grade`, `sub_grade` e `int_rate` para medir el aporte propio del modelo | Dependencia del scoring de Lending Club |
+| Hecho | Ablación sin `grade`, `sub_grade` e `int_rate` y reporte estadístico completo y reproducible | Dependencia del scoring de Lending Club |
+| Alta | Recalibrar el intercepto (o Platt/isotónica) con la validación y monitorear la calibración por cosecha | 11.6 |
 | Alta | Validación temporal en cascada, estabilidad por cosecha y calibración en el tiempo | Robustez temporal |
 | Alta | Gate relativo champion-challenger con DeLong en vez de ΔAUC puntual (hoy 0.002, menor que el margen práctico) | Coherencia con la regla de selección |
 | Alta | Experimento de ventana de entrenamiento (solo 2012, 2011-2012, todo, todo con pesos por antigüedad) | Trade-off actualidad vs tamaño de muestra |
 | Media | Target de PD a 12 meses con etiquetas disponibles por fecha, o modelo de supervivencia en tiempo discreto que aproveche los préstamos censurados | 11.3, 11.4 |
 | Media | Potencia estadística y pruebas secuenciales en el A/B | Error tipo I al revisar resultados cada mes |
 | Media | Corrección por comparaciones múltiples en el drift (Benjamini-Hochberg) y Wasserstein como tamaño de efecto | Falsos positivos con muestras grandes |
-| Media | Demo pública en Hugging Face Spaces con el `@champion` exportado | 11.7 |
-| Baja | Análisis de equidad | 11.6 |
+| Media | Demo pública en Hugging Face Spaces con el `@champion` exportado | 11.8 |
+| Baja | Análisis de equidad | 11.7 |
 
 ## 13. Referencias
 

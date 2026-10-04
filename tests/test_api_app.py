@@ -149,3 +149,9 @@ def test_databricks_client_uses_served_model_path(api):
     assert out == [{"probability": 0.1, "decision": "APROBAR"}]
     assert FakeW.api_client.paths == ["/serving-endpoints/ep/served-models/challenger/invocations"]
     assert Path(API_DIR / "app.yaml").exists()
+
+
+def test_root_redirects_to_docs(client):
+    c, *_ = client
+    response = c.get("/", follow_redirects=False)
+    assert response.status_code in (302, 307) and response.headers["location"] == "/docs"

@@ -146,7 +146,7 @@ def page_scoring() -> None:
 
 
 def page_monitoring() -> None:
-    st.header("Monitoreo del replay de producción (2015 en adelante)")
+    st.header("Monitoreo del replay de producción (originación 2014-2015)")
     if not WAREHOUSE_ID:
         st.warning("La app no tiene el recurso sql-warehouse configurado.")
         return
@@ -225,10 +225,16 @@ def page_monitoring() -> None:
 
     st.subheader("A/B testing champion vs challenger")
     ab = query(f"SELECT * FROM {FQ}.ab_test_results ORDER BY run_ts DESC LIMIT 10")
-    st.dataframe(ab, hide_index=True) if not ab.empty else st.caption("Sin evaluaciones A/B todavía.")
+    if ab.empty:
+        st.caption("Sin evaluaciones A/B todavía.")
+    else:
+        st.dataframe(ab, hide_index=True)
     st.subheader("Reentrenamientos disparados por el monitoreo")
     rt = query(f"SELECT * FROM {FQ}.retrain_events ORDER BY event_ts DESC LIMIT 10")
-    st.dataframe(rt, hide_index=True) if not rt.empty else st.caption("Ninguno todavía.")
+    if rt.empty:
+        st.caption("Ninguno todavía.")
+    else:
+        st.dataframe(rt, hide_index=True)
 
 
 def page_models() -> None:
@@ -237,7 +243,10 @@ def page_models() -> None:
         return
     bench = query(f"""SELECT * FROM {FQ}.model_benchmark
                       WHERE run_ts = (SELECT max(run_ts) FROM {FQ}.model_benchmark)""")
-    st.dataframe(bench, hide_index=True) if not bench.empty else st.caption("Sin entrenamientos registrados.")
+    if bench.empty:
+        st.caption("Sin entrenamientos registrados.")
+    else:
+        st.dataframe(bench, hide_index=True)
     try:
         st.json(client().served_versions(ENDPOINT))
     except Exception as exc:

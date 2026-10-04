@@ -67,6 +67,38 @@ def write_selection_tables(names, selection: dict, comparison: dict, run_ts, ver
     lh.write_pandas(pairs, names.model_comparison)
 
 
+def log_statistical_report(
+    run_id, splits, table, models, selection, comparison, scorecard, best, model, result, origin, data, train_end
+):
+    """Registra en MLflow el reporte estadístico completo (cifras + figuras) de este entrenamiento.
+
+    Es el mismo análisis que `scripts/build_report.py` vuelca al README. Nunca hace
+    fallar el entrenamiento: si algo falla, se registra la advertencia y se sigue.
+    """
+    if scorecard is None:
+        return
+    try:
+        import tempfile
+        from pathlib import Path
+
+        from credit_risk.reporting import figures
+        from credit_risk.reporting.pipeline import assemble_results, json_safe
+
+        dates = pd.to_datetime(data[date_column()])
+        later = data[dates >= pd.Timestamp(train_end)]
+        res = json_safe(
+            assemble_results(
+                splits, table, models, selection, comparison, scorecard, best, model, result, origin, later
+            )
+        )
+        with mlflow.start_run(run_id=run_id), tempfile.TemporaryDirectory() as tmp:
+            figures.render_all(res, Path(tmp))
+            mlflow.log_artifacts(tmp, "report/figures")
+            mlflow.log_dict(res, "report/results.json")
+    except Exception as exc:  # el reporte es informativo: no bloquea el registro del modelo
+        lh.logger.warning("No se pudo generar el reporte estadístico: %s", exc)
+
+
 def main() -> None:
     lh.configure_logging()
     args = lh.job_args(
@@ -181,6 +213,21 @@ def main() -> None:
     with open(f"{names.volume_path}/artifacts/reports/training_report_v{version}.md", "w", encoding="utf-8") as fh:
         fh.write(report)
 
+    log_statistical_report(
+        parent.info.run_id,
+        splits,
+        table,
+        models,
+        selection,
+        comparison,
+        scorecard,
+        best,
+        model,
+        result,
+        origin,
+        data,
+        split_cfg["train_end"],
+    )
     lh.set_task_value("gate_passed", "true")
     lh.set_task_value("challenger_version", version)
 

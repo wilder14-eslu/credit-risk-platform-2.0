@@ -11,10 +11,16 @@
 
 Plataforma end-to-end de **riesgo crediticio** (probabilidad de default) sobre **2.26 millones de préstamos
 reales de Lending Club (2007-2018)**, desplegada 100% en **Databricks Free Edition**: desde el planteamiento
-del problema hasta el despliegue, el monitoreo en producción, el A/B testing y el reentrenamiento continuo,
-con todo el ciclo automatizado como código.
+del problema hasta el despliegue, el monitoreo, el A/B testing y el reentrenamiento continuo, con todo el ciclo
+automatizado como código.
 
-> **Demo en vivo:** [credit-risk02.streamlit.app](https://credit-risk02.streamlit.app) (scoring con el modelo en producción,
+No es solo un modelo de default: es la **simulación del ciclo de vida de un sistema de decisión crediticia**. Un
+modelo elegido con validación temporal y pruebas estadísticas se despliega, y luego se enfrenta mes a mes a
+originaciones posteriores que nunca vio (replay histórico 2014-2015): el monitoreo detecta el cambio de
+distribución, dispara reentrenamientos y un esquema champion-challenger con A/B decide si el modelo nuevo merece
+reemplazar al actual. Los datos y el drift son reales; el entorno de producción es una simulación.
+
+> **Demo en vivo:** [credit-risk02.streamlit.app](https://credit-risk02.streamlit.app) (scoring con el modelo desplegado,
 > monitoreo, A/B testing, benchmark y análisis estadístico; sin login).
 >
 > **Reporte técnico completo:** [docs/REPORTE_TECNICO.md](docs/REPORTE_TECNICO.md) (metodología, resultados,
@@ -29,7 +35,7 @@ con todo el ciclo automatizado como código.
 | **Modelo en producción** | Elegido con una regla estadística (DeLong + Holm + parsimonia) entre 4 algoritmos y un scorecard WoE; AUC ~0.69 en test fuera de tiempo |
 | **Plataforma** | Databricks Free Edition: Jobs serverless, Delta Lake, Unity Catalog, MLflow, Model Serving y Databricks Apps |
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
-| **Producción** | Replay de la originación 2014-2015: el monitoreo detectó concept drift y data drift, disparó dos reentrenamientos y un A/B en producción decidió **no** promover al challenger por falta de evidencia |
+| **Producción simulada** | Replay de la originación real 2014-2015: el monitoreo detectó concept drift y data drift, disparó dos reentrenamientos y un A/B simulado decidió **no** promover al challenger por falta de evidencia |
 | **Demo** | [Streamlit Community Cloud](https://credit-risk02.streamlit.app), autocontenida: el champion exportado de Unity Catalog y una foto de las tablas de producción |
 | **Calidad** | 100 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
@@ -248,16 +254,24 @@ El scorecard (benchmark regulatorio) obtiene AUC 0.6812 IC [0.6763, 0.6861] en t
 
 <!-- RESULTADOS:FIN -->
 
-## Resultados en producción (replay 2014-2015)
+## Resultados en producción simulada (replay 2014-2015)
 
-La "producción" re-juega mes a mes los préstamos reales emitidos en 2014-2015, que el modelo nunca vio. Las
+La producción es una simulación: re-juega mes a mes los préstamos reales emitidos en 2014-2015, que el modelo
+nunca vio, en el orden en que se originaron. Las
 etiquetas llegan con 6 meses de retraso, como en un banco. Cifras de la corrida en Databricks del 04/10/2026
 (también visibles en la página *Monitoreo* de la [demo](https://credit-risk02.streamlit.app)).
 
-**Modelo en producción:** `@champion` v3, `lightgbm`, AUC 0.6907 en el test fuera de tiempo, umbral 0.18.
-El reporte reproducible de arriba eligió `catboost`: ambos pertenecen al grupo en empate práctico (diferencia de
-AUC menor al margen de 0.005) y la elección final entre ellos depende del tuning, que no es determinista entre
-corridas. Es la regla de selección funcionando como se diseñó: entre modelos equivalentes, cualquiera es válido.
+### Modelo analítico vs modelo desplegado
+
+| | Modelo | Origen |
+|---|---|---|
+| **Analítico** | `catboost` + Optuna | Reporte reproducible de arriba (`scripts/build_report.py`), corrido en local con el CSV completo |
+| **Desplegado** | `lightgbm`, `@champion` v3, AUC test 0.6907, umbral 0.18 | Pipeline de entrenamiento en Databricks, promovido por el flujo de validación y despliegue |
+
+Son corridas distintas del mismo procedimiento. Ambos modelos están en el grupo retenido por empate práctico
+(diferencias de AUC menores al margen de 0.005), y la elección final dentro de ese grupo depende del tuning, que no
+es determinista entre corridas. Es la regla de selección funcionando como se diseñó: entre modelos equivalentes,
+cualquiera es válido.
 
 ### Monitoreo
 
@@ -277,7 +291,7 @@ corridas. Es la regla de selección funcionando como se diseñó: entre modelos 
   2015 Lending Club pasó a vender casi todos sus préstamos como *whole loans*. Le siguen `purpose` (0.34) y
   `dti` (0.25).
 
-### A/B testing champion vs challenger
+### A/B testing champion vs challenger (simulado sobre el replay)
 
 | Reloj | Champion v3 | Challenger v4 | AUC champion | AUC challenger | Diferencia (IC 95 %) | Decisión |
 |---|---|---|---|---|---|---|
@@ -367,9 +381,9 @@ flowchart LR
 | **Sin data leakage** | Solo variables conocidas al solicitar; 22 columnas posteriores al desembolso se descartan y un test lo verifica | Es el error más común con este dataset e infla el AUC artificialmente |
 | **Sin sesgo de censura** | Solo se etiquetan préstamos cuyo plazo terminó antes del corte del archivo | Entre los préstamos recientes, los que ya tienen desenlace son sobre todo defaults tempranos |
 | **Umbral por costo** | El umbral minimiza el costo esperado en validación (FN = 5, FP = 1), no se fija en 0.5 | Alinea la decisión con el negocio en vez de con la exactitud |
-| **Drift real, no simulado** | La producción es un replay mes a mes de la originación real 2014-2015 | El monitoreo detecta cambios reales del portafolio de Lending Club |
+| **Drift observado en datos reales** | La producción se simula con un replay mes a mes de la originación real 2014-2015, sin inyectar drift artificial | El monitoreo enfrenta los cambios que de verdad tuvo el portafolio de Lending Club |
 | **Etiquetas con retraso** | El desenlace llega después; el data drift actúa como alerta temprana | En crédito la performance real llega tarde |
-| **A/B testing real** | Dos variantes en el mismo endpoint, asignación determinista por hash de `loan_id` | La promoción se decide con bootstrap del AUC y test z sobre la morosidad de aprobados |
+| **A/B testing simulado sobre el replay** | Dos variantes en el mismo endpoint de Model Serving, asignación determinista por hash de `loan_id` (80/20) | La promoción se decide con bootstrap del AUC y test z sobre la morosidad de aprobados |
 | **Trazabilidad** | Cada versión del modelo guarda su commit (`git_sha`) y la versión Delta exacta de sus datos | Cualquier modelo en producción se puede reproducir con *time travel* |
 | **Staging como gate** | Un pipeline completo en staging debe pasar antes de tocar prod | Un error de integración nunca llega a producción |
 | **Selección estadística** | Validación decide, test se mide una vez; DeLong + Holm + margen práctico + parsimonia | Evita la "maldición del ganador" y no premia diferencias de ruido con más complejidad |

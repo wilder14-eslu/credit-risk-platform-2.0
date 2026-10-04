@@ -20,6 +20,8 @@ APP_DIR = Path(__file__).resolve().parent
 os.environ.setdefault("CREDIT_RISK_CONFIG_DIR", str(APP_DIR / "config"))
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
+if not (APP_DIR / "views.py").exists():  # desde el repo: las páginas viven en apps/dashboard
+    sys.path.append(str(APP_DIR.parent / "dashboard"))
 
 import pandas as pd  # noqa: E402
 
@@ -151,3 +153,25 @@ def score(record: dict[str, Any], model=None) -> dict[str, Any]:
         "installment": float(record["installment"]),
         "factors": json.loads(out["top_factors"]),
     }
+
+
+SNAPSHOT_TABLES = (
+    "monitoring_metrics",
+    "drift_by_feature",
+    "ab_test_results",
+    "retrain_events",
+    "model_benchmark",
+    "model_evaluation",
+)
+
+
+def snapshot(table: str) -> pd.DataFrame:
+    """Foto de una tabla Delta de producción exportada al publicar la demo (vacía si no existe)."""
+    f = APP_DIR / "snapshot" / f"{table}.json"
+    return pd.DataFrame(json.loads(f.read_text(encoding="utf-8"))) if f.exists() else pd.DataFrame()
+
+
+@lru_cache(maxsize=1)
+def snapshot_info() -> dict[str, Any]:
+    f = APP_DIR / "snapshot" / "snapshot_info.json"
+    return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}

@@ -1,8 +1,8 @@
 """Demo pública de Credit Risk Platform 2.0 (Streamlit Community Cloud).
 
-- Evaluar solicitud: PD, decisión y factores SHAP con el modelo champion exportado de Unity Catalog.
-- Por qué este modelo: resultados del análisis estadístico (reports/results.json) y sus gráficas.
-- Arquitectura: cómo funciona la plataforma completa en Databricks.
+Mismas páginas que el dashboard de Databricks (Scoring, Monitoreo, Modelos, con `views.py`
+compartido) más el análisis estadístico y la arquitectura. Sin credenciales: el scoring usa el
+champion exportado y Monitoreo/Modelos una foto de las tablas Delta tomada al publicar.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import demo_core as D
+import views
 
 REPO = "https://github.com/wilder14-eslu/credit-risk-platform-2.0"
 RISK, SAFE = "#d03b3b", "#0ca30c"
@@ -192,27 +193,71 @@ def page_results() -> None:
     st.caption(f"Datos: {r.get('data_file', 'Lending Club')}. Generado el {r.get('generated_at', '')}.")
 
 
-def main() -> None:
-    st.set_page_config(page_title="Credit Risk Platform 2.0", page_icon="💳", layout="wide")
-    st.title("Credit Risk Platform 2.0")
+def page_monitoring() -> None:
+    st.header("Monitoreo del replay de producción (originación 2014-2015)")
+    snap = D.snapshot_info()
+    if not snap:
+        st.info("Esta publicación de la demo no incluye la foto de monitoreo.")
+        return
+    st.caption(
+        f"Foto de las tablas Delta de producción ({snap.get('source', '')}) del {snap.get('exported_at', '?')}. "
+        "En Databricks este mismo panel se lee en vivo con el SQL warehouse."
+    )
+    views.render_monitoring(
+        D.snapshot("monitoring_metrics"),
+        D.snapshot("drift_by_feature"),
+        D.snapshot("ab_test_results"),
+        D.snapshot("retrain_events"),
+    )
+
+
+def page_models() -> None:
+    st.header("Benchmark de modelos (último entrenamiento)")
+    info, snap = D.model_info(), D.snapshot_info()
+    if snap:
+        st.caption(f"Foto de Unity Catalog del {snap.get('exported_at', '?')}.")
+    served = {"champion": info["version"]} if info.get("version") else None
+    views.render_models(D.snapshot("model_benchmark"), D.snapshot("model_evaluation"), served)
+
+
+def page_scoring_header() -> None:
+    st.header("Evaluar una solicitud de crédito")
     info = D.model_info()
     version = f" v{info['version']}" if info.get("version") else ""
-    st.markdown(
-        "Probabilidad de default de un préstamo de Lending Club con el modelo en producción de una plataforma MLOps "
-        f"en Databricks. [Código en GitHub]({REPO})"
+    st.caption(
+        f"El score lo calcula el modelo champion `{info.get('algorithm', '?')}`{version} exportado de Unity Catalog "
+        "(en Databricks lo calcula el endpoint de Model Serving)."
     )
+    page_scoring()
+
+
+def page_results_header() -> None:
+    st.header("Por qué este modelo")
+    page_results()
+
+
+def page_architecture() -> None:
+    st.markdown(ARCHITECTURE)
+
+
+PAGES = {
+    "Scoring": page_scoring_header,
+    "Monitoreo": page_monitoring,
+    "Modelos": page_models,
+    "Por qué este modelo": page_results_header,
+    "Arquitectura": page_architecture,
+}
+
+
+def main() -> None:
+    st.set_page_config(page_title="Credit Risk Platform 2.0", page_icon="💳", layout="wide")
+    choice = st.sidebar.radio("Navegación", list(PAGES))
+    st.sidebar.caption("Lending Club 2007-2018 · Databricks Free Edition")
+    st.sidebar.markdown(f"[Código en GitHub]({REPO})")
+    info = D.model_info()
     if info:
-        st.caption(
-            f"Modelo `{info.get('algorithm', '?')}`{version} ({info.get('source', '')}), "
-            f"exportado el {info.get('exported_at', '?')}."
-        )
-    t1, t2, t3 = st.tabs(["Evaluar solicitud", "Por qué este modelo", "Arquitectura"])
-    with t1:
-        page_scoring()
-    with t2:
-        page_results()
-    with t3:
-        st.markdown(ARCHITECTURE)
+        st.sidebar.caption(f"Modelo exportado el {info.get('exported_at', '?')}.")
+    PAGES[choice]()
 
 
 main()

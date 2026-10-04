@@ -25,6 +25,8 @@ jobs:
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      # opcional: con él se exporta la foto de monitoreo y benchmark que muestran Monitoreo y Modelos
+      DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,7 +40,7 @@ jobs:
           done
       - name: Instalar
         run: pip install -e ".[ml]" streamlit plotly
-      - name: Construir la demo (descarga el champion y prueba una predicción)
+      - name: Construir la demo (champion, foto de producción y prueba de una predicción)
         run: python scripts/build_demo.py --alias "${{ inputs.alias }}"
       - name: Publicar en la rama demo
         working-directory: build/demo

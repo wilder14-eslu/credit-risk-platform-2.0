@@ -32,6 +32,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEMO_SRC = ROOT / "apps" / "demo"
+DASHBOARD_SRC = ROOT / "apps" / "dashboard"
 sys.path.insert(0, str(ROOT / "src"))  # para deserializar CreditRiskModel
 logger = logging.getLogger("build_demo")
 
@@ -89,6 +90,42 @@ gatherUsageStats = false
 """
 
 
+def export_snapshot(dest: Path, warehouse_id: str, catalog: str, schema: str, client=None) -> dict:
+    """Foto de las tablas de monitoreo y benchmark (las mismas consultas del dashboard de Databricks).
+
+    La demo pública no tiene credenciales: muestra estas tablas tal como estaban al publicarla.
+    """
+    sys.path.insert(0, str(DASHBOARD_SRC))
+    try:
+        import views
+        from databricks_client import DatabricksClient
+    finally:
+        sys.path.remove(str(DASHBOARD_SRC))
+
+    client = client or DatabricksClient()
+    workspace = getattr(client, "w", None)
+    if workspace is not None:  # el warehouse serverless se apaga solo: encenderlo evita respuestas vacías por timeout
+        try:
+            workspace.warehouses.start_and_wait(warehouse_id)
+        except Exception as exc:
+            logger.warning("No se pudo encender el warehouse %s: %s", warehouse_id, exc)
+    dest.mkdir(parents=True, exist_ok=True)
+    rows = {}
+    for table, sql in views.queries(f"{catalog}.{schema}").items():
+        try:
+            data = client.sql(warehouse_id, sql)
+        except Exception as exc:  # p. ej. una tabla que aún no existe
+            logger.warning("Sin datos de %s: %s", table, exc)
+            data = []
+        (dest / f"{table}.json").write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+        rows[table] = len(data)
+    info = {"exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), "source": f"{catalog}.{schema}",
+            "rows": rows}  # fmt: skip
+    (dest / "snapshot_info.json").write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
+    logger.info("Foto de producción: %s", rows)
+    return info
+
+
 def demo_readme(info: dict) -> str:
     version_txt = f" v{info['version']}" if info.get("version") else ""
     return f"""# Credit Risk Platform 2.0 · demo pública
@@ -104,7 +141,9 @@ El código fuente está en la rama `main`.
 """
 
 
-def build(out: Path, model_path: Path | None, alias: str, catalog: str, schema: str) -> Path:
+def build(
+    out: Path, model_path: Path | None, alias: str, catalog: str, schema: str, warehouse_id: str | None = None
+) -> Path:
     if out.exists():
         shutil.rmtree(out)
     (out / "model").mkdir(parents=True)
@@ -114,6 +153,11 @@ def build(out: Path, model_path: Path | None, alias: str, catalog: str, schema: 
 
     for name in ("app.py", "demo_core.py"):
         shutil.copy2(DEMO_SRC / name, out / name)
+    shutil.copy2(DASHBOARD_SRC / "views.py", out / "views.py")  # mismas páginas que el dashboard de Databricks
+    if warehouse_id:
+        export_snapshot(out / "snapshot", warehouse_id, catalog, schema)
+    else:
+        logger.warning("Sin --warehouse-id: la demo no tendrá la foto de monitoreo ni del benchmark")
     shutil.copytree(ROOT / "src" / "credit_risk", out / "credit_risk", ignore=ignore)
     shutil.copytree(ROOT / "config", out / "config", ignore=ignore)
     if (ROOT / "reports" / "results.json").exists():
@@ -163,9 +207,14 @@ def main() -> None:
     parser.add_argument("--catalog", default=os.getenv("UC_CATALOG", "workspace"))
     parser.add_argument("--schema", default=os.getenv("UC_SCHEMA", "credit_risk"), help="credit_risk = producción")
     parser.add_argument("--out", type=Path, default=ROOT / "build" / "demo")
+    parser.add_argument(
+        "--warehouse-id",
+        default=os.getenv("DATABRICKS_WAREHOUSE_ID"),
+        help="SQL warehouse para exportar la foto de monitoreo y benchmark (si falta, se omite)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
-    build(args.out, args.model, args.alias, args.catalog, args.schema)
+    build(args.out, args.model, args.alias, args.catalog, args.schema, args.warehouse_id)
 
 
 if __name__ == "__main__":

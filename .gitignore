@@ -16,6 +16,7 @@ dist/
 catboost_info/
 mlruns/
 *.joblib
+*.onnx
 
 # Datos: Lending Club se descarga aparte (licencia y tamaño), nunca se versiona
 /data/

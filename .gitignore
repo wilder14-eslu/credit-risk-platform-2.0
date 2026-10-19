@@ -17,6 +17,8 @@ catboost_info/
 mlruns/
 *.joblib
 *.onnx
+# Excepción: el modelo de la demo web ONNX debe publicarse en GitHub Pages
+!apps/web-onnx/model/credit_risk_model.onnx
 
 # Datos: Lending Club se descarga aparte (licencia y tamaño), nunca se versiona
 /data/

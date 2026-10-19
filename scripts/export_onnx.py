@@ -21,11 +21,11 @@ import logging
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 logger = logging.getLogger("export_onnx")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -149,31 +149,73 @@ def main() -> None:
             "conservative": {
                 "name": "Perfil conservador (Bajo riesgo)",
                 "values": {
-                    "loan_amnt": 10000, "term": 36, "int_rate": 7.5, "grade": "A", "sub_grade": "A3",
-                    "purpose": "credit_card", "annual_inc": 95000, "emp": 8, "home": "MORTGAGE",
-                    "verif": "Verified", "dti": 9.0, "state": "TX", "fico": 760, "revol_bal": 6000,
-                    "revol_util": 22.0, "open_acc": 9, "total_acc": 28, "history": 260
-                }
+                    "loan_amnt": 10000,
+                    "term": 36,
+                    "int_rate": 7.5,
+                    "grade": "A",
+                    "sub_grade": "A3",
+                    "purpose": "credit_card",
+                    "annual_inc": 95000,
+                    "emp": 8,
+                    "home": "MORTGAGE",
+                    "verif": "Verified",
+                    "dti": 9.0,
+                    "state": "TX",
+                    "fico": 760,
+                    "revol_bal": 6000,
+                    "revol_util": 22.0,
+                    "open_acc": 9,
+                    "total_acc": 28,
+                    "history": 260,
+                },
             },
             "typical": {
                 "name": "Perfil promedio (Riesgo moderado)",
                 "values": {
-                    "loan_amnt": 12000, "term": 36, "int_rate": 13.5, "grade": "C", "sub_grade": "C2",
-                    "purpose": "debt_consolidation", "annual_inc": 65000, "emp": 5, "home": "RENT",
-                    "verif": "Source Verified", "dti": 18.5, "state": "CA", "fico": 702, "revol_bal": 14500,
-                    "revol_util": 55.0, "open_acc": 10, "total_acc": 24, "history": 180
-                }
+                    "loan_amnt": 12000,
+                    "term": 36,
+                    "int_rate": 13.5,
+                    "grade": "C",
+                    "sub_grade": "C2",
+                    "purpose": "debt_consolidation",
+                    "annual_inc": 65000,
+                    "emp": 5,
+                    "home": "RENT",
+                    "verif": "Source Verified",
+                    "dti": 18.5,
+                    "state": "CA",
+                    "fico": 702,
+                    "revol_bal": 14500,
+                    "revol_util": 55.0,
+                    "open_acc": 10,
+                    "total_acc": 24,
+                    "history": 180,
+                },
             },
             "risky": {
                 "name": "Perfil riesgoso (Alto riesgo)",
                 "values": {
-                    "loan_amnt": 30000, "term": 60, "int_rate": 24.0, "grade": "F", "sub_grade": "F2",
-                    "purpose": "small_business", "annual_inc": 38000, "emp": 1, "home": "RENT",
-                    "verif": "Not Verified", "dti": 34.0, "state": "NV", "fico": 662, "revol_bal": 21000,
-                    "revol_util": 92.0, "open_acc": 15, "total_acc": 18, "history": 60
-                }
-            }
-        }
+                    "loan_amnt": 30000,
+                    "term": 60,
+                    "int_rate": 24.0,
+                    "grade": "F",
+                    "sub_grade": "F2",
+                    "purpose": "small_business",
+                    "annual_inc": 38000,
+                    "emp": 1,
+                    "home": "RENT",
+                    "verif": "Not Verified",
+                    "dti": 34.0,
+                    "state": "NV",
+                    "fico": 662,
+                    "revol_bal": 21000,
+                    "revol_util": 92.0,
+                    "open_acc": 15,
+                    "total_acc": 18,
+                    "history": 60,
+                },
+            },
+        },
     }
 
     meta_file = args.output / "credit_risk_meta.json"

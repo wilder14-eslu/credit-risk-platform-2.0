@@ -2,6 +2,8 @@
 
 Plataforma web de riesgo crediticio con inferencia nativa en el navegador mediante **ONNX Runtime WebAssembly (WASM)**.
 
+> **Demo en vivo:** [https://wilder14-eslu.github.io/credit-risk-platform-2.0/](https://wilder14-eslu.github.io/credit-risk-platform-2.0/)
+
 Misma interfaz, páginas y capacidades que la versión Streamlit (`apps/demo` y `apps/dashboard`), pero con:
 - **Carga Inmediata (< 200 ms)**: Cero segundos de *cold-start*, sin contenedores durmientes ni esperas de arranque de Python.
 - **Inferencia en el Cliente (< 3 ms)**: Ejecución local directa en WebAssembly en el navegador (`credit_risk_model.onnx`).
@@ -63,6 +65,8 @@ apps/web-onnx/
 
 Al ser una aplicación 100% estática (HTML/CSS/JS + WASM), se puede publicar gratis en GitHub Pages:
 
-1. Ve a los ajustes de tu repositorio en GitHub: **Settings > Pages**.
-2. Selecciona la rama y la carpeta `/apps/web-onnx` (o publica vía GitHub Actions con `actions/upload-pages-artifact`).
-3. La aplicación estará disponible globalmente con CDN de alta velocidad y carga instantánea.
+El workflow `.github/workflows/pages.yml` publica esta carpeta en cada push a `main` que la modifique.
+
+1. Una sola vez: **Settings > Pages > Build and deployment > Source = GitHub Actions**.
+2. Haz push (o ejecuta el workflow *Demo web ONNX* desde la pestaña Actions).
+3. La app queda en https://wilder14-eslu.github.io/credit-risk-platform-2.0/.

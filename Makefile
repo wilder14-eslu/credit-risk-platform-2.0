@@ -35,3 +35,7 @@ replay-dev:
 
 apps:
 	databricks bundle run -t prod credit_risk_api && databricks bundle run -t prod credit_risk_dashboard
+
+web:
+	python apps/web-onnx/serve.py
+

@@ -28,7 +28,7 @@ jobs:
       # opcional: con él se exporta la foto de monitoreo y benchmark que muestran Monitoreo y Modelos
       DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12" # el mismo Python que se elige en Streamlit Cloud

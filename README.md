@@ -8,6 +8,7 @@
 ![MLflow](https://img.shields.io/badge/MLflow-Unity%20Catalog-0194E2?logo=mlflow&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 [![Demo](https://img.shields.io/badge/demo-en%20vivo-FF4B4B?logo=streamlit&logoColor=white)](https://credit-risk02.streamlit.app)
+[![Demo ONNX](https://img.shields.io/badge/demo-ONNX%20en%20el%20navegador-005CED?logo=onnx&logoColor=white)](https://wilder14-eslu.github.io/credit-risk-platform-2.0/)
 
 Plataforma end-to-end de **riesgo crediticio** (probabilidad de default) sobre **2.26 millones de préstamos
 reales de Lending Club (2007-2018)**, desplegada 100% en **Databricks Free Edition**: desde el planteamiento
@@ -23,6 +24,9 @@ reemplazar al actual. Los datos y el drift son reales; el entorno de producción
 > **Demo en vivo:** [credit-risk02.streamlit.app](https://credit-risk02.streamlit.app) (scoring con el modelo desplegado,
 > monitoreo, A/B testing, benchmark y análisis estadístico; sin login).
 >
+> **Demo web con ONNX:** [wilder14-eslu.github.io/credit-risk-platform-2.0](https://wilder14-eslu.github.io/credit-risk-platform-2.0/) (el mismo modelo corre
+> dentro de tu navegador con ONNX Runtime WebAssembly: carga inmediata, sin servidor ni cold-start).
+>
 > **Reporte técnico completo:** [docs/REPORTE_TECNICO.md](docs/REPORTE_TECNICO.md) (metodología, resultados,
 > decisiones estadísticas y limitaciones).
 
@@ -36,7 +40,7 @@ reemplazar al actual. Los datos y el drift son reales; el entorno de producción
 | **Plataforma** | Databricks Free Edition: Jobs serverless, Delta Lake, Unity Catalog, MLflow, Model Serving y Databricks Apps |
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
 | **Producción simulada** | Replay de la originación real 2014-2015: el monitoreo detectó concept drift y data drift, disparó dos reentrenamientos y un A/B simulado decidió **no** promover al challenger por falta de evidencia |
-| **Demo** | [Streamlit Community Cloud](https://credit-risk02.streamlit.app), autocontenida: el champion exportado de Unity Catalog y una foto de las tablas de producción |
+| **Demo** | [Streamlit Community Cloud](https://credit-risk02.streamlit.app), autocontenida: el champion exportado de Unity Catalog y una foto de las tablas de producción; versión web con ONNX en [GitHub Pages](https://wilder14-eslu.github.io/credit-risk-platform-2.0/) |
 | **Calidad** | 100 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
 ## Resultados y análisis estadístico
@@ -351,6 +355,7 @@ flowchart LR
 | Registro | MLflow en Unity Catalog con aliases `@champion`, `@challenger`, `@previous_champion` |
 | Serving | Model Serving con dos variantes y split de tráfico para A/B |
 | API y panel | Databricks Apps: FastAPI (`apps/api`) y Streamlit (`apps/dashboard`) |
+| Plataforma Edge Web (ONNX) | `apps/web-onnx`: Aplicación web ultrarrápida (WASM) con carga inmediata (< 200 ms) e inferencia directa en el navegador (< 3 ms), publicada en [GitHub Pages](https://wilder14-eslu.github.io/credit-risk-platform-2.0/) |
 | Orquestación | Databricks Jobs con `condition_task` y `run_job_task` (monitoreo dispara reentrenamiento) |
 | Infraestructura como código | Databricks Asset Bundles (`databricks.yml`, `resources/jobs.yml`) |
 | CI/CD | GitHub Actions: dev, gate de integración en staging, prod con aprobación |

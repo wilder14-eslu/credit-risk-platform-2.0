@@ -29,6 +29,7 @@ jobs:
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -42,9 +43,9 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[ml,apps,dev]"
       - name: Pytest + cobertura
-        run: pytest -p no:warnings --cov --cov-report=term --cov-report=xml --cov-fail-under=85 --junitxml=junit.xml
+        run: pytest -p no:warnings --timeout=300 --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=100 --junitxml=junit.xml
       - name: Resumen de cobertura
-        if: always()
+        if: always() && hashFiles('coverage.xml') != ''
         run: |
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import xml.etree.ElementTree as ET

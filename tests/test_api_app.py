@@ -327,7 +327,7 @@ def test_slow_serving_times_out(api, lr_model):
 
     class Slow(FakeDatabricks):
         def invoke(self, *a, **k):
-            _time.sleep(1.0)
+            _time.sleep(2.0)
             return super().invoke(*a, **k)
 
     slow = Slow({"champion": lr_model})
@@ -335,7 +335,7 @@ def test_slow_serving_times_out(api, lr_model):
     with TestClient(api["main"].create_app(client=slow, sink=api["sinks"].MemorySink(), timeout_seconds=0.2)) as c:
         started = _time.perf_counter()
         body = c.post("/api/v1/predict", json={"application": APPLICATION}).json()
-        assert _time.perf_counter() - started < 0.9
+        assert _time.perf_counter() - started < 1.5  # sin timeout tardaría 2 s o más
     assert body["decision"] == "REVISION_MANUAL" and body["reasons"] == ["MODELO_NO_DISPONIBLE"]
 
 
@@ -367,3 +367,135 @@ def test_versions_are_cached_and_failures_back_off(api, lr_model):
         for _ in range(5):
             c.post("/api/v1/predict", json={"application": APPLICATION})
     assert calls["n"] == 1  # un fallo no provoca una consulta por cada solicitud
+
+
+# --- Cobertura de bordes de la API -------------------------------------------------------------
+
+
+def test_lifespan_builds_real_client_and_sink(api, monkeypatch):
+    """Sin cliente ni sink inyectados, la app crea los suyos (MemorySink sin warehouse, DeltaSink con él)."""
+    created = []
+
+    class StubClient(FakeDatabricks):
+        def __init__(self):
+            super().__init__({})
+            created.append(self)
+
+    main = api["main"]
+    monkeypatch.setattr(main, "DatabricksClient", StubClient)
+    monkeypatch.setattr(main, "WAREHOUSE_ID", "")
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+    monkeypatch.setattr(main, "WAREHOUSE_ID", "wh")
+    with TestClient(main.create_app()) as c:
+        c.post("/api/v1/outcomes", json={"loan_id": "L-9", "actual_default": False})
+    assert len(created) == 2
+    assert any(s.startswith("INSERT INTO workspace.credit_risk.outcomes") for s in created[1].statements)
+
+
+def test_failed_challenger_falls_back_to_champion(api, lr_model):
+    class ChallengerDown(FakeDatabricks):
+        def invoke(self, endpoint, variant, records, params=None):
+            if variant == "challenger":
+                raise RuntimeError("challenger caído")
+            return super().invoke(endpoint, variant, records, params)
+
+    fake = ChallengerDown({"champion": lr_model})
+    lid = next(f"L-{i}" for i in range(500) if core_assign(f"L-{i}", 0.2) == "challenger")
+    with TestClient(api["main"].create_app(client=fake, sink=api["sinks"].MemorySink())) as c:
+        body = c.post("/api/v1/predict", json={"loan_id": lid, "application": APPLICATION}).json()
+    assert body["variant"] == "champion" and body["probability"] is not None
+
+
+def test_monitoring_summary(api, monkeypatch):
+    main = api["main"]
+
+    class Partial(FakeDatabricks):
+        def sql(self, warehouse_id, statement, parameters=None):
+            if "retrain_events" in statement:
+                raise RuntimeError("tabla no existe")
+            return [{"ok": 1}]
+
+    monkeypatch.setattr(main, "WAREHOUSE_ID", "")
+    with TestClient(main.create_app(client=Partial({}), sink=api["sinks"].MemorySink())) as c:
+        assert c.get("/api/v1/monitoring/summary").json()["available"] is False
+    monkeypatch.setattr(main, "WAREHOUSE_ID", "wh")
+    with TestClient(main.create_app(client=Partial({}), sink=api["sinks"].MemorySink())) as c:
+        out = c.get("/api/v1/monitoring/summary").json()
+    assert out["available"] and out["monitoring"] == [{"ok": 1}] and out["retrains"] == []
+    assert "tabla no existe" in out["errors"]["retrains"]
+
+
+def test_ttl_cache_expires_and_evicts(api):
+    now = [0.0]
+    cache = api["resilience"].TTLCache(max_items=2, ttl_seconds=10, clock=lambda: now[0])
+    cache.put("a", 1)
+    cache.put("b", 2)
+    assert cache.get("a") == 1
+    cache.put("c", 3)  # supera el máximo: sale el menos usado ("b")
+    assert cache.get("b") is None and cache.get("c") == 3
+    now[0] = 11.0
+    assert cache.get("a") is None and cache.get("missing") is None
+
+
+def test_circuit_breaker_half_open_recovers(api):
+    now = [0.0]
+    breaker = api["resilience"].CircuitBreaker(failure_threshold=1, reset_seconds=5, clock=lambda: now[0])
+    with pytest.raises(RuntimeError):
+        breaker.call(lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert breaker.state == "abierto"
+    with pytest.raises(api["resilience"].CircuitOpenError):
+        breaker.call(lambda: 1)
+    now[0] = 6.0
+    assert breaker.state == "semiabierto" and breaker.call(lambda: 42) == 42 and breaker.state == "cerrado"
+
+
+def test_parameter_values_and_memory_sink(api):
+    sinks = api["sinks"]
+    assert sinks.parameter_value(True) == "true" and sinks.parameter_value(False) == "false"
+    assert sinks.parameter_value(None) is None and sinks.parameter_value(float("nan")) is None
+    assert sinks.parameter_value(3) == "3" and sinks.sql_type("actual_default") == "INT"
+    mem = sinks.MemorySink()
+    mem.flush()
+    mem.close()
+
+
+def test_databricks_client_with_sdk_objects(api, monkeypatch):
+    """El cliente real se prueba contra objetos con la forma de las respuestas del SDK de Databricks."""
+    from types import SimpleNamespace as NS
+
+    import databricks.sdk
+    from databricks.sdk.service.sql import StatementState
+
+    dc_mod = api["databricks_client"]
+
+    class FakeStatements:
+        def __init__(self):
+            self.kwargs = []
+
+        def execute_statement(self, **kwargs):
+            self.kwargs.append(kwargs)
+            if "falla" in kwargs["statement"]:
+                return NS(status=NS(state=StatementState.FAILED, error=NS(message="sintaxis")))
+            if "vacio" in kwargs["statement"]:
+                return NS(status=NS(state=StatementState.SUCCEEDED, error=None), manifest=None, result=None)
+            return NS(
+                status=NS(state=StatementState.SUCCEEDED, error=None),
+                manifest=NS(schema=NS(columns=[NS(name="a"), NS(name="b")])),
+                result=NS(data_array=[["1", "x"], ["2", "y"]]),
+            )
+
+    fake_w = NS(
+        statement_execution=FakeStatements(),
+        serving_endpoints=NS(get=lambda name: NS(config=NS(served_entities=[NS(name="champion", entity_version=3)]))),
+    )
+    monkeypatch.setattr(databricks.sdk, "WorkspaceClient", lambda: fake_w)
+    dc = dc_mod.DatabricksClient()  # sin argumentos: construye el WorkspaceClient (aquí simulado)
+    assert dc.served_versions("ep") == {"champion": "3"}
+    rows = dc.sql("wh", "SELECT :v", [{"name": "v", "value": "1", "type": "INT"}])
+    assert rows == [{"a": "1", "b": "x"}, {"a": "2", "b": "y"}]
+    params = fake_w.statement_execution.kwargs[-1]["parameters"]
+    assert params[0].name == "v" and params[0].value == "1" and params[0].type == "INT"
+    assert dc.sql("wh", "SELECT vacio") == []
+    with pytest.raises(RuntimeError, match="sintaxis"):
+        dc.sql("wh", "SELECT falla")

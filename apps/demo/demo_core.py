@@ -143,15 +143,21 @@ def results() -> dict[str, Any]:
 
 def score(record: dict[str, Any], model=None) -> dict[str, Any]:
     """PD, decisión, banda de riesgo y los factores (SHAP) que más pesaron."""
+    from credit_risk import policy as P  # la misma política versionada que la API y el replay
+
     model = model or load_model()
     out = model.predict_frame(pd.DataFrame([record]), explain=True, top_k=5).iloc[0]
+    factors = json.loads(out["top_factors"])
+    decision = P.decide(float(out["probability"]), float(model.threshold), record, factors)
     return {
         "probability": float(out["probability"]),
-        "decision": str(out["decision"]),
+        "decision": decision.decision,
+        "reasons": decision.reasons,
+        "policy_version": decision.policy_version,
         "risk_band": str(out["risk_band"]),
         "threshold": float(model.threshold),
         "installment": float(record["installment"]),
-        "factors": json.loads(out["top_factors"]),
+        "factors": factors,
     }
 
 

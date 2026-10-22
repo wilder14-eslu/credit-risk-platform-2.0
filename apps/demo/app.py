@@ -127,14 +127,17 @@ def page_scoring() -> None:
     result = D.score(D.build_record(**form), model=model())
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Probabilidad de default", f"{result['probability']:.1%}")
-    icon = "✅" if result["decision"] == "APROBAR" else "🛑"
-    k2.metric("Decisión", f"{icon} {result['decision']}")
+    icon = {"APROBAR": "✅", "REVISION_MANUAL": "⚠️"}.get(result["decision"], "🛑")
+    k2.metric("Decisión", f"{icon} {result['decision'].replace('_', ' ')}")
     k3.metric("Banda de riesgo", result["risk_band"])
     k4.metric("Cuota mensual", f"${result['installment']:,.0f}")
     st.caption(
-        f"Se rechaza si la PD es mayor o igual al umbral **{result['threshold']:.2f}**, elegido minimizando el costo "
-        "esperado con un falso negativo 5 veces más caro que un falso positivo."
+        f"Decide la política de crédito {result['policy_version']}: rechaza si la PD es mayor o igual al umbral "
+        f"**{result['threshold']:.2f}** (elegido minimizando el costo esperado con FN:FP = 5:1), envía a revisión "
+        "manual la zona gris justo debajo del umbral y aplica reglas duras de capacidad de pago."
     )
+    if result["reasons"]:
+        st.caption("Motivos: " + ", ".join(f"`{r}`" for r in result["reasons"]))
     st.subheader("Factores que más pesaron (SHAP)")
     st.caption("Contribución al log-odds de default: rojo aumenta el riesgo, verde lo reduce.")
     st.plotly_chart(factors_figure(result["factors"]), width="stretch")

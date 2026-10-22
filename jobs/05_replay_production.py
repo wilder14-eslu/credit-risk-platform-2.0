@@ -20,12 +20,14 @@ if _root is None:
 sys.path.insert(0, os.path.join(_root, "src"))
 os.environ.setdefault("CREDIT_RISK_CONFIG_DIR", os.path.join(_root, "config"))
 
+import json  # noqa: E402
 import uuid  # noqa: E402
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from credit_risk import lakehouse as lh  # noqa: E402
+from credit_risk import policy as P  # noqa: E402
 from credit_risk.config import (  # noqa: E402
     CHALLENGER_ALIAS,
     CHAMPION_ALIAS,
@@ -57,6 +59,7 @@ def main() -> None:
         lh.set_task_value("clock", str(pd.Timestamp(last).date()))
         return
 
+    lh.ensure_columns(names.inference_log, lh.ADDED_COLUMNS["inference_log"])
     champion_v = R.get_alias_version(names, CHAMPION_ALIAS)
     if champion_v is None:
         raise RuntimeError("No hay champion desplegado")
@@ -85,8 +88,18 @@ def main() -> None:
             frame["request_id"] = [str(uuid.uuid4()) for _ in range(len(frame))]
             frame["event_ts"] = month
             frame["source"], frame["variant"], frame["model_version"] = "replay", variant, version
-            for col in ("probability", "decision", "risk_band"):
+            for col in ("probability", "risk_band"):
                 frame[col] = scored[col].to_numpy()
+            # La decisión la toma la misma política versionada que usa la API (no el umbral del modelo).
+            records = group[list(input_features())].to_dict(orient="records")
+            decisions = [
+                P.decide(float(p), float(model.threshold), rec)
+                for p, rec in zip(scored["probability"].to_numpy(), records, strict=True)
+            ]
+            frame["decision"] = [d.decision for d in decisions]
+            frame["reasons"] = [json.dumps(d.reasons) for d in decisions]
+            frame["policy_version"] = P.POLICY_VERSION
+            frame["input_hash"] = [P.input_hash(rec) for rec in records]
             frame["latency_ms"] = np.nan
             logs.append(frame)
         log = pd.concat(logs, ignore_index=True)

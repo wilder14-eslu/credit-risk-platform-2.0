@@ -71,6 +71,7 @@ def main() -> None:
         SELECT l.variant, l.probability, l.decision, l.event_ts, o.actual_default
         FROM {names.inference_log} l JOIN {names.outcomes} o ON l.request_id = o.request_id
         WHERE o.observed_ts <= '{pd.Timestamp(clock).date()}'
+          AND l.probability IS NOT NULL  -- las solicitudes sin PD (modelo caído) fueron a revisión manual
           AND ((l.variant = 'champion' AND l.model_version = '{champion_v}')
             OR (l.variant = 'challenger' AND l.model_version = '{challenger_v}'))
           {since}

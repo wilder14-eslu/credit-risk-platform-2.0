@@ -79,6 +79,7 @@ def patch_platform(names: UCNames) -> None:
     lh.set_task_value = TASK_VALUES.__setitem__
     lh.grant_app_access = lambda *a, **k: None
     lh.table_version = lambda fq_name: 1  # en Databricks sale de DESCRIBE HISTORY
+    lh.ensure_columns = lambda fq_name, columns: []  # las tablas locales ya nacen con todas las columnas
     uri = f"sqlite:///{TMP / 'mlflow.db'}"
 
     def setup_mlflow(experiment=None):

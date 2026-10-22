@@ -46,7 +46,8 @@ def test_score_orders_profiles_by_risk(demo_core, xgb_model):
         for name in demo_core.EXAMPLES
     }
     typical = pds["Perfil típico"]
-    assert 0 < typical["probability"] < 1 and typical["decision"] in ("APROBAR", "RECHAZAR")
+    assert 0 < typical["probability"] < 1 and typical["decision"] in ("APROBAR", "RECHAZAR", "REVISION_MANUAL")
+    assert typical["policy_version"] and (typical["decision"] == "APROBAR") == (typical["reasons"] == [])
     assert typical["factors"] and {"feature", "label", "impact", "direction"} <= set(typical["factors"][0])
     assert pds["Perfil conservador"]["probability"] < pds["Perfil riesgoso"]["probability"]
 
@@ -133,7 +134,7 @@ def test_streamlit_app_scores_a_request(app_test):
     assert not at.exception, at.exception
     labels = {m.label: m.value for m in at.metric}
     assert labels["Probabilidad de default"].endswith("%")
-    assert any(word in labels["Decisión"] for word in ("APROBAR", "RECHAZAR"))
+    assert any(word in labels["Decisión"] for word in ("APROBAR", "RECHAZAR", "REVISION MANUAL"))
 
 
 @pytest.mark.parametrize(

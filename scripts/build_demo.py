@@ -80,7 +80,12 @@ def pinned_requirements(algorithm: str) -> list[str]:
 
 
 STREAMLIT_CONFIG = """[theme]
-primaryColor = "#2a78d6"
+base = "light"
+primaryColor = "#1f5fbf"
+backgroundColor = "#f5f7fb"
+secondaryBackgroundColor = "#eef2f8"
+textColor = "#1c2430"
+font = "sans serif"
 
 [server]
 headless = true
@@ -151,7 +156,7 @@ def build(
     (out / ".streamlit" / "config.toml").write_text(STREAMLIT_CONFIG, encoding="utf-8")
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
 
-    for name in ("app.py", "demo_core.py"):
+    for name in ("app.py", "demo_core.py", "ui.py"):
         shutil.copy2(DEMO_SRC / name, out / name)
     shutil.copy2(DASHBOARD_SRC / "views.py", out / "views.py")  # mismas páginas que el dashboard de Databricks
     if warehouse_id:

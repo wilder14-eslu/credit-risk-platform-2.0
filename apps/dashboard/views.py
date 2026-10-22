@@ -8,6 +8,7 @@ Las usan dos apps con la misma presentación:
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -17,6 +18,8 @@ import streamlit as st
 SERIES = {"observed": "#2a78d6", "predicted": "#eb6834"}
 STATUS = {"estable": "#0ca30c", "warning": "#fab219", "alerta": "#d03b3b"}
 ICON = {"estable": "✅", "warning": "⚠️", "alerta": "🛑", "critico": "🛑", "sin_datos": "ℹ️"}
+
+Plot = Callable[[go.Figure], object]
 
 MONITORING_NUMERIC = ["roc_auc", "prediction_psi", "default_rate_observed", "default_rate_predicted", "auc_drop"]
 
@@ -52,8 +55,14 @@ def _reasons(value) -> list[str]:
         return [str(value)] if value else []
 
 
-def render_monitoring(mon: pd.DataFrame, drift: pd.DataFrame, ab: pd.DataFrame, rt: pd.DataFrame) -> None:
-    """mon: monitoring_metrics; drift: drift_by_feature de la última corrida; ab y rt: últimos eventos."""
+def render_monitoring(
+    mon: pd.DataFrame, drift: pd.DataFrame, ab: pd.DataFrame, rt: pd.DataFrame, plot: Plot | None = None
+) -> None:
+    """mon: monitoring_metrics; drift: drift_by_feature de la última corrida; ab y rt: últimos eventos.
+
+    `plot` permite a cada app dibujar los gráficos con su propio estilo (por defecto `st.plotly_chart`).
+    """
+    plot = plot or st.plotly_chart
     if mon.empty:
         st.info("Aún no hay corridas de monitoreo. Ejecuta el job credit-risk-production-monitoring.")
         return
@@ -83,7 +92,7 @@ def render_monitoring(mon: pd.DataFrame, drift: pd.DataFrame, ab: pd.DataFrame, 
         showlegend=False,
     )
     fig.update_xaxes(tickformat="%Y-%m", dtick="M1")
-    st.plotly_chart(fig)
+    plot(fig)
 
     fig = go.Figure()
     fig.add_trace(
@@ -106,7 +115,7 @@ def render_monitoring(mon: pd.DataFrame, drift: pd.DataFrame, ab: pd.DataFrame, 
         title="Calibración: tasa de default observada vs predicha", hovermode="x unified", yaxis_tickformat=".0%"
     )
     fig.update_xaxes(tickformat="%Y-%m", dtick="M1")
-    st.plotly_chart(fig)
+    plot(fig)
 
     if not drift.empty:
         drift = num(drift.copy(), ["psi", "ks_pvalue"]).sort_values("psi")
@@ -123,7 +132,7 @@ def render_monitoring(mon: pd.DataFrame, drift: pd.DataFrame, ab: pd.DataFrame, 
         fig.add_vline(x=0.10, line_dash="dot", annotation_text="warning 0.10")
         fig.add_vline(x=0.25, line_dash="dot", annotation_text="alerta 0.25")
         fig.update_layout(title="Data drift por variable (PSI vs entrenamiento)", height=620)
-        st.plotly_chart(fig)
+        plot(fig)
         cols = [c for c in ("feature", "kind", "psi", "ks_pvalue", "status") if c in drift]
         st.dataframe(drift[cols], hide_index=True)
 
@@ -139,8 +148,11 @@ def render_monitoring(mon: pd.DataFrame, drift: pd.DataFrame, ab: pd.DataFrame, 
         st.dataframe(rt, hide_index=True)
 
 
-def render_models(bench: pd.DataFrame, evaluation: pd.DataFrame, served: dict | None = None) -> None:
+def render_models(
+    bench: pd.DataFrame, evaluation: pd.DataFrame, served: dict | None = None, plot: Plot | None = None
+) -> None:
     """bench: model_benchmark del último entrenamiento; evaluation: model_evaluation (IC de DeLong)."""
+    plot = plot or st.plotly_chart
     if bench.empty and evaluation.empty:
         st.caption("Sin entrenamientos registrados.")
     if not evaluation.empty:
@@ -167,7 +179,7 @@ def render_models(bench: pd.DataFrame, evaluation: pd.DataFrame, served: dict | 
                 )
             )
             fig.update_layout(title=f"AUC con IC 95 % (DeLong): {title}", xaxis_title="ROC-AUC", height=300)
-            st.plotly_chart(fig)
+            plot(fig)
         st.caption("En azul el modelo elegido por la regla DeLong + Holm + parsimonia.")
     if not bench.empty:
         st.subheader("Benchmark del último entrenamiento")

@@ -103,7 +103,15 @@ def built_demo(tmp_path_factory, lr_model):
 def test_build_demo_is_self_contained(built_demo, lr_model):
     """La carpeta generada puntúa sola (lo verifica build) y lleva todo lo que necesita Streamlit Cloud."""
     out = built_demo
-    for name in ("app.py", "demo_core.py", "views.py", "README.md", "requirements.txt", ".streamlit/config.toml"):
+    for name in (
+        "app.py",
+        "demo_core.py",
+        "ui.py",
+        "views.py",
+        "README.md",
+        "requirements.txt",
+        ".streamlit/config.toml",
+    ):
         assert (out / name).exists(), name
     assert (out / "config" / "data_schema.yaml").exists()
     assert (out / "credit_risk" / "models" / "credit_model.py").exists()

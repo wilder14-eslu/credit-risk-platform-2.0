@@ -37,7 +37,7 @@ reemplazar al actual. Los datos y el drift son reales; el entorno de producción
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
 | **Producción simulada** | Replay de la originación real 2014-2015: el monitoreo detectó concept drift y data drift, disparó dos reentrenamientos y un A/B simulado decidió **no** promover al challenger por falta de evidencia |
 | **Demo** | [Streamlit Community Cloud](https://credit-risk02.streamlit.app), autocontenida: el champion exportado de Unity Catalog y una foto de las tablas de producción |
-| **Calidad** | 138 tests (cobertura ~95%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
+| **Calidad** | 169 tests (cobertura 100%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
 ## Resultados y análisis estadístico
 
@@ -413,7 +413,7 @@ Umbrales versionados en [`config/platform.yaml`](config/platform.yaml): cambiarl
 | 1 | Validación de datos y de modelo | Expectativas bloqueantes; gates absolutos (AUC, sobreajuste, Brier, latencia) y relativos (champion vs challenger en el mismo test) |
 | 1 | Feature store y metadata | Feature table en UC + MLflow con corridas anidadas por candidato |
 | 1 | Continuous Training | Schedule semanal y disparo desde el monitoreo con ventanas desplazadas (`as_of`) |
-| 2 | CI | Lint, tests (3.11 y 3.12), cobertura 85%+, pipeline end-to-end local, validación del bundle, CodeQL |
+| 2 | CI | Lint, tests (3.11 y 3.12), cobertura 100% como gate, pipeline end-to-end local, validación del bundle, CodeQL |
 | 2 | CD del pipeline y del modelo | dev, gate de integración en staging con smoke check de trazabilidad, prod con aprobación |
 | 2 | Monitoreo y experimentación online | Data, prediction y concept drift; A/B con promoción automática; rollback |
 
@@ -440,7 +440,7 @@ datos y no a ciegas.
 
 ## Ingeniería y confiabilidad
 
-- **Tests:** 138 tests unitarios y de contrato (cobertura ~95%) más un pipeline end-to-end que ejecuta todos los
+- **Tests:** 169 tests unitarios y de contrato (cobertura 100%) más un pipeline end-to-end que ejecuta todos los
   jobs en local con DuckDB y MLflow sobre SQLite, sin necesidad de Databricks.
 - **Contratos de infraestructura:** los tests verifican que todas las tareas sean serverless, que solo las
   tareas idempotentes tengan reintentos, que staging y prod no compartan esquema ni endpoint y que no haya
@@ -517,7 +517,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
 
-pytest                                         # 138 tests, sin Databricks
+pytest                                         # 169 tests, sin Databricks
 python tests/e2e/run_pipeline_locally.py       # ciclo completo con datos sintéticos
 
 python scripts/build_demo.py --model ruta/credit_model.joblib   # demo pública con un modelo exportado

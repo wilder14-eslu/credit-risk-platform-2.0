@@ -106,13 +106,10 @@ def build_estimator(name: str, params: dict[str, Any] | None = None, seed: int =
         from lightgbm import LGBMClassifier
 
         return LGBMClassifier(**params, subsample_freq=1, random_state=seed, n_jobs=-1, verbose=-1)
-    if name == "catboost":
-        from catboost import CatBoostClassifier
+    # catboost (el nombre ya se validó contra KNOWN al inicio)
+    from catboost import CatBoostClassifier
 
-        return CatBoostClassifier(
-            **params, random_seed=seed, verbose=False, eval_metric="AUC", allow_writing_files=False
-        )
-    raise ValueError(f"Algoritmo desconocido: {name}")
+    return CatBoostClassifier(**params, random_seed=seed, verbose=False, eval_metric="AUC", allow_writing_files=False)
 
 
 def available_candidates(names: list[str]) -> list[str]:

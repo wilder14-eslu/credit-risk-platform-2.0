@@ -35,11 +35,14 @@ class DatabricksClient:
         config = self.w.serving_endpoints.get(endpoint).config
         return {e.name: str(e.entity_version) for e in (config.served_entities or [])}
 
-    def sql(self, warehouse_id: str, statement: str) -> list[dict]:
-        from databricks.sdk.service.sql import StatementState
+    def sql(self, warehouse_id: str, statement: str, parameters: list[dict] | None = None) -> list[dict]:
+        """Ejecuta SQL en el warehouse. Los valores externos van SIEMPRE como parámetros
+        (`:nombre` en el SQL + `parameters=[{"name", "value", "type"}]`), nunca concatenados."""
+        from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
+        params = [StatementParameterListItem(**p) for p in parameters] if parameters else None
         resp = self.w.statement_execution.execute_statement(
-            statement=statement, warehouse_id=warehouse_id, wait_timeout="30s"
+            statement=statement, warehouse_id=warehouse_id, wait_timeout="30s", parameters=params
         )
         if resp.status and resp.status.state == StatementState.FAILED:
             raise RuntimeError(resp.status.error.message if resp.status.error else "SQL failed")

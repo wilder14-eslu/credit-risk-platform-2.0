@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS {{t}} (
   decision STRING,
   risk_band STRING,
   latency_ms DOUBLE,
+  model_latency_ms DOUBLE COMMENT 'Tiempo de la llamada a Model Serving (API)',
+  policy_version STRING COMMENT 'Versión de la política de crédito que tomó la decisión',
+  reasons STRING COMMENT 'Códigos de motivo (JSON) de rechazos y revisiones manuales',
+  input_hash STRING COMMENT 'sha256 de la solicitud: reproduce cualquier decisión',
   {_FEATURE_DDL}
 ) COMMENT 'Log de inferencias (payload + predicción) para monitoreo y A/B testing'
 """,
@@ -139,6 +143,32 @@ def ensure_objects(names: UCNames) -> None:
         s.sql(f"CREATE VOLUME IF NOT EXISTS {names.catalog}.{names.schema}.{volume}")
     for table, ddl in DDL.items():
         s.sql(ddl.format(t=names.fq(table)))
+    ensure_columns(names.inference_log, ADDED_COLUMNS["inference_log"])
+
+
+# Columnas agregadas después de crear las tablas: `CREATE TABLE IF NOT EXISTS` no las
+# agrega a una tabla existente, así que se migran con ALTER TABLE (idempotente).
+ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "inference_log": {
+        "model_latency_ms": "DOUBLE",
+        "policy_version": "STRING",
+        "reasons": "STRING",
+        "input_hash": "STRING",
+    }
+}
+
+
+def ensure_columns(fq_name: str, columns: dict[str, str]) -> list[str]:
+    """Agrega a una tabla Delta las columnas que le falten. Devuelve las agregadas."""
+    if not table_exists(fq_name):
+        return []
+    s = spark()
+    existing = {c.lower() for c in s.table(fq_name).columns}
+    missing = [c for c in columns if c.lower() not in existing]
+    if missing:
+        s.sql(f"ALTER TABLE {fq_name} ADD COLUMNS ({', '.join(f'{c} {columns[c]}' for c in missing)})")
+        logger.info("Columnas agregadas a %s: %s", fq_name, missing)
+    return missing
 
 
 def table_exists(fq_name: str) -> bool:

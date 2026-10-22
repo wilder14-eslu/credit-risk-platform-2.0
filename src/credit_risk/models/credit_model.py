@@ -16,13 +16,7 @@ import numpy as np
 import pandas as pd
 
 from credit_risk.features.engineering import Preprocessor, build_features, feature_label
-
-
-def risk_band(probability: float) -> str:
-    for limit, band in ((0.05, "A"), (0.10, "B"), (0.20, "C"), (0.35, "D")):
-        if probability < limit:
-            return band
-    return "E"
+from credit_risk.policy import risk_band
 
 
 @dataclass
@@ -66,6 +60,8 @@ class CreditRiskModel:
                 "probability": proba,
                 "decision": np.where(proba >= self.threshold, "RECHAZAR", "APROBAR"),
                 "risk_band": [risk_band(p) for p in proba],
+                # El umbral viaja con cada predicción: la capa de política lo usa y verifica la coherencia.
+                "threshold": float(self.threshold),
             },
             index=raw.index,
         )

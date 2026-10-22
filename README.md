@@ -37,7 +37,7 @@ reemplazar al actual. Los datos y el drift son reales; el entorno de producción
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
 | **Producción simulada** | Replay de la originación real 2014-2015: el monitoreo detectó concept drift y data drift, disparó dos reentrenamientos y un A/B simulado decidió **no** promover al challenger por falta de evidencia |
 | **Demo** | [Streamlit Community Cloud](https://credit-risk02.streamlit.app), autocontenida: el champion exportado de Unity Catalog y una foto de las tablas de producción |
-| **Calidad** | 100 tests (cobertura ~94%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
+| **Calidad** | 138 tests (cobertura ~95%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
 ## Resultados y análisis estadístico
 
@@ -327,7 +327,10 @@ flowchart LR
         mon --> ab["A/B: bootstrap AUC + z-test"]
         ab -->|promover / detener| reg
         mon -->|drift: retrain con as_of| train
-        api["App: API FastAPI"] -->|variante sticky por loan_id| serve
+        api["App: API FastAPI<br/>validación estricta, timeout,<br/>circuit breaker, caché"] -->|variante sticky por loan_id| serve
+        serve -->|PD + SHAP| policy{{"Política de crédito versionada<br/>APROBAR / RECHAZAR / REVISIÓN MANUAL<br/>+ códigos de motivo"}}
+        policy --> api
+        replay -->|misma política| policy
         api --> log
         dash["App: Dashboard Streamlit"] --> serve
         dash -->|SQL warehouse| log
@@ -351,6 +354,7 @@ flowchart LR
 | Registro | MLflow en Unity Catalog con aliases `@champion`, `@challenger`, `@previous_champion` |
 | Serving | Model Serving con dos variantes y split de tráfico para A/B |
 | API y panel | Databricks Apps: FastAPI (`apps/api`) y Streamlit (`apps/dashboard`) |
+| Decisión | Política de crédito versionada (`src/credit_risk/policy.py`): el modelo estima la PD, la política decide y da los motivos |
 | Orquestación | Databricks Jobs con `condition_task` y `run_job_task` (monitoreo dispara reentrenamiento) |
 | Infraestructura como código | Databricks Asset Bundles (`databricks.yml`, `resources/jobs.yml`) |
 | CI/CD | GitHub Actions: dev, gate de integración en staging, prod con aprobación |
@@ -367,7 +371,7 @@ flowchart LR
 | 5. Validación | Split temporal: train 2007-2012, validación 2013-H1, test 2013-H2 | `src/credit_risk/models/training.py` |
 | 6. Modelado | Benchmark, Optuna, umbral por costo esperado, quality gates absolutos y relativos | `jobs/03_train_register.py`, `jobs/04_validate_and_deploy.py` |
 | 7. Explicabilidad | Contribuciones SHAP por solicitud (top 3 razones) y bandas de riesgo A-E | `src/credit_risk/models/credit_model.py` |
-| 8. Despliegue | Registro en UC, Model Serving con A/B, API y dashboard | `src/credit_risk/registry/`, `apps/` |
+| 8. Despliegue | Registro en UC, Model Serving con A/B, política de crédito versionada, API endurecida y dashboard | `src/credit_risk/registry/`, `src/credit_risk/policy.py`, `apps/` |
 | 9. Monitoreo | Data, prediction y concept drift; prior shift; etiquetas con retraso | `src/credit_risk/monitoring/`, `jobs/06_monitor.py` |
 | 10. Experimentación | A/B champion vs challenger con promoción automática y rollback | `jobs/07_ab_evaluate.py`, `jobs/08_rollback.py` |
 | 11. Reentrenamiento | Continuous Training semanal y disparado por drift, con ventanas desplazadas | `resources/jobs.yml` |
@@ -383,6 +387,7 @@ flowchart LR
 | **Umbral por costo** | El umbral minimiza el costo esperado en validación (FN = 5, FP = 1), no se fija en 0.5 | Alinea la decisión con el negocio en vez de con la exactitud |
 | **Drift observado en datos reales** | La producción se simula con un replay mes a mes de la originación real 2014-2015, sin inyectar drift artificial | El monitoreo enfrenta los cambios que de verdad tuvo el portafolio de Lending Club |
 | **Etiquetas con retraso** | El desenlace llega después; el data drift actúa como alerta temprana | En crédito la performance real llega tarde |
+| **El modelo estima, la política decide** | La PD pasa por una política determinista y versionada: reglas duras (cuota/ingreso, DTI), umbral por costo, zona gris a revisión manual y códigos de motivo | Cambiar un criterio de negocio es un PR revisado, sin reentrenar; cada decisión es auditable y reproducible (`policy_version` + `input_hash`) |
 | **A/B testing simulado sobre el replay** | Dos variantes en el mismo endpoint de Model Serving, asignación determinista por hash de `loan_id` (80/20) | La promoción se decide con bootstrap del AUC y test z sobre la morosidad de aprobados |
 | **Trazabilidad** | Cada versión del modelo guarda su commit (`git_sha`) y la versión Delta exacta de sus datos | Cualquier modelo en producción se puede reproducir con *time travel* |
 | **Staging como gate** | Un pipeline completo en staging debe pasar antes de tocar prod | Un error de integración nunca llega a producción |
@@ -412,16 +417,38 @@ Umbrales versionados en [`config/platform.yaml`](config/platform.yaml): cambiarl
 | 2 | CD del pipeline y del modelo | dev, gate de integración en staging con smoke check de trazabilidad, prod con aprobación |
 | 2 | Monitoreo y experimentación online | Data, prediction y concept drift; A/B con promoción automática; rollback |
 
+## API en producción: robustez, velocidad y seguridad
+
+El modelo nunca decide solo: Model Serving entrega la PD y la **política de crédito** (`policy.py`, la misma en la
+API y en el replay) toma la decisión. Cada respuesta trae `decision`, `reasons`, `policy_version` e `input_hash`, y
+todo queda en `inference_log`.
+
+| Riesgo | Protección |
+|---|---|
+| Model Serving lento o caído (por ejemplo, escalando desde cero) | Timeout por llamada (3 s) y **circuit breaker**: tras 3 fallos seguidos deja de llamar 30 s y responde al instante |
+| Aprobar sin evidencia | **Respuesta prudente:** sin PD confiable la decisión es `REVISION_MANUAL` (`MODELO_NO_DISPONIBLE`), nunca `APROBAR` |
+| Salida del modelo corrupta | **Invariantes** antes de usarla: PD en [0, 1], banda coherente con la PD, decisión coherente con el umbral; si fallan, `REVISION_MANUAL` (`SALIDA_MODELO_INCOHERENTE`) |
+| Datos maliciosos o inesperados | Validación estricta: listas cerradas (propósito, estado), rangos máximos, `sub_grade` coherente con `grade`, campos extra prohibidos, `loan_id` con formato seguro, cuerpo de 16 KB como máximo |
+| Inyección SQL en el registro | `INSERT` **parametrizados** en el SQL warehouse: los datos nunca forman parte del texto SQL |
+| Solicitudes repetidas | **Idempotencia:** el mismo `loan_id` con los mismos datos devuelve la misma respuesta desde caché, sin llamar al modelo ni registrarla dos veces |
+| Latencia por el registro en Delta | El log se escribe en lotes desde un hilo de fondo: ninguna solicitud espera al warehouse |
+| Latencia por metadatos | Las versiones servidas se cachean 60 s y, si la consulta falla, no se reintenta en cada solicitud |
+| Rechazos sin explicación | Los factores SHAP y los códigos de motivo se devuelven **siempre** en rechazos y revisiones; en aprobaciones, solo si se piden (`explain`) |
+
+Cada predicción registra el tiempo total y el de Model Serving (`model_latency_ms`) por separado, para optimizar con
+datos y no a ciegas.
+
 ## Ingeniería y confiabilidad
 
-- **Tests:** 100 tests unitarios y de contrato (cobertura ~94%) más un pipeline end-to-end que ejecuta todos los
+- **Tests:** 138 tests unitarios y de contrato (cobertura ~95%) más un pipeline end-to-end que ejecuta todos los
   jobs en local con DuckDB y MLflow sobre SQLite, sin necesidad de Databricks.
 - **Contratos de infraestructura:** los tests verifican que todas las tareas sean serverless, que solo las
   tareas idempotentes tengan reintentos, que staging y prod no compartan esquema ni endpoint y que no haya
   correos ni carpetas compartidas en la configuración.
 - **Jobs:** timeout por tarea y por job, cola, alertas por fallo y por duración; reintentos solo donde
   repetir no duplica datos.
-- **Seguridad:** secretos solo en GitHub Actions, CodeQL, Dependabot y despliegue bajo la carpeta del usuario.
+- **Seguridad:** secretos solo en GitHub Actions, CodeQL, Dependabot y despliegue bajo la carpeta del usuario;
+  en la API, validación estricta, SQL parametrizado y límite de tamaño (ver [API en producción](#api-en-producción-robustez-velocidad-y-seguridad)).
 
 ## Limitaciones conocidas y roadmap
 
@@ -472,9 +499,10 @@ Lo que un revisor exigente todavía señalaría, y cómo se abordaría:
 │   ├── inference/               # DeLong, Holm, significancia práctica, regla de parsimonia
 │   ├── models/                  # Candidatos, scorecard WoE, métricas, split temporal, pyfunc con SHAP
 │   ├── monitoring/              # Data y concept drift, A/B, replay, política de CT
+│   ├── policy.py                # Política de crédito: decisión, motivos e invariantes (copia en apps/api)
 │   └── registry/                # MLflow/UC, Model Serving, trazabilidad (lineage)
 ├── jobs/                        # 01 ingesta ... 08 rollback
-├── apps/api/                    # Databricks App: FastAPI
+├── apps/api/                    # Databricks App: FastAPI (política, resiliencia, sinks parametrizados)
 ├── apps/dashboard/              # Databricks App: Streamlit (views.py compartido con la demo)
 ├── apps/demo/                   # Demo pública en Streamlit Community Cloud
 ├── scripts/                     # build_report.py (análisis estadístico) y build_demo.py (demo pública)
@@ -489,7 +517,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
 
-pytest                                         # 100 tests, sin Databricks
+pytest                                         # 138 tests, sin Databricks
 python tests/e2e/run_pipeline_locally.py       # ciclo completo con datos sintéticos
 
 python scripts/build_demo.py --model ruta/credit_model.joblib   # demo pública con un modelo exportado

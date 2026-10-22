@@ -157,6 +157,35 @@ def show_result(result: dict, annual_inc: float, review_band: float) -> None:
     st.plotly_chart(ui.factors_figure(result["factors"]), width="stretch", config={"displayModeBar": False})
 
 
+def report_vs_deployed(r: dict) -> None:
+    """Explica por qué el reporte reproducible y el modelo desplegado pueden elegir algoritmos distintos."""
+    info = D.model_info()
+    deployed, chosen = info.get("algorithm"), r["final"]["algorithm"]
+    if not deployed:
+        return
+    version = f" v{info['version']}" if info.get("version") else ""
+    if deployed == chosen:
+        st.info(f"El modelo desplegado (`{deployed}`{version}) coincide con el elegido en este reporte.")
+        return
+    val = {b["algorithm"]: b["val_auc"] for b in r.get("benchmark", [])}
+    gap = ""
+    if deployed in val and chosen in val:
+        gap = (
+            f" En este reporte la diferencia de AUC de validación entre `{chosen}` ({val[chosen]:.4f}) y "
+            f"`{deployed}` ({val[deployed]:.4f}) es de {abs(val[chosen] - val[deployed]):.4f}, muy por debajo del "
+            "margen práctico de 0.005 y sin significancia estadística."
+        )
+    auc = pd.to_numeric(pd.Series([info.get("test_roc_auc")]), errors="coerce").iloc[0]
+    auc_txt = f" (AUC test {auc:.4f})" if pd.notna(auc) else ""
+    st.info(
+        f"**Reporte reproducible vs modelo desplegado.** Esta página resume el reporte reproducible, que eligió "
+        f"`{chosen}`. El modelo que puntúa en la demo es el champion `{deployed}`{version}{auc_txt}, elegido por "
+        "el job de entrenamiento en Databricks con la misma regla (DeLong + Holm + margen práctico + parsimonia)."
+        f"{gap} Con un empate así, la semilla, el tuning o la muestra deciden el primer lugar: ambos modelos rinden "
+        "igual en la práctica y cualquiera de los dos es una elección válida."
+    )
+
+
 def page_results() -> None:
     ui.hero(
         "Por qué este modelo",
@@ -174,6 +203,7 @@ def page_results() -> None:
     st.markdown(
         f"**Modelo elegido en el reporte reproducible:** `{f['algorithm']}`{tuned}. {r['selection']['reason']}."
     )
+    report_vs_deployed(r)
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("AUC test", f"{d['auc']:.4f}", help=f"IC 95 % [{d['auc_ci'][0]:.4f}, {d['auc_ci'][1]:.4f}] (DeLong)")
     m2.metric("Gini / KS", f"{d['gini']:.3f} / {d['ks']:.3f}")

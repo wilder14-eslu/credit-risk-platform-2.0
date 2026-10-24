@@ -20,7 +20,7 @@ originaciones posteriores que nunca vio (replay histórico 2014-2015): el monito
 distribución, dispara reentrenamientos y un esquema champion-challenger con A/B decide si el modelo nuevo merece
 reemplazar al actual. Los datos y el drift son reales; el entorno de producción es una simulación.
 
-> **Demo en vivo:** [credit-risk02.streamlit.app](https://credit-risk02.streamlit.app) (scoring con el modelo desplegado,
+> **Demo en vivo:** [credit-risk02.streamlit.app](https://credit-risk-platform-20-adqnv9j2qftznvu9uzdqem.streamlit.app) (scoring con el modelo desplegado,
 > monitoreo, A/B testing, benchmark y análisis estadístico; sin login).
 >
 > **Reporte técnico completo:** [docs/REPORTE_TECNICO.md](docs/REPORTE_TECNICO.md) (metodología, resultados,

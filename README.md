@@ -36,7 +36,7 @@ reemplazar al actual. Los datos y el drift son reales; el entorno de producción
 | **Plataforma** | Databricks Free Edition: Jobs serverless, Delta Lake, Unity Catalog, MLflow, Model Serving y Databricks Apps |
 | **MLOps** | Nivel 2 de Google: CI/CD con entornos dev, staging y prod; entrenamiento continuo disparado por drift; A/B testing con promoción y rollback |
 | **Producción simulada** | Replay de la originación real 2014-2015: el monitoreo detectó concept drift y data drift, disparó dos reentrenamientos y un A/B simulado decidió **no** promover al challenger por falta de evidencia |
-| **Demo** | [Streamlit Community Cloud](https://credit-risk02.streamlit.app), autocontenida: el champion exportado de Unity Catalog y una foto de las tablas de producción |
+| **Demo** | [Streamlit Community Cloud](https://credit-risk-platform-20-adqnv9j2qftznvu9uzdqem.streamlit.app/), autocontenida: el champion exportado de Unity Catalog y una foto de las tablas de producción |
 | **Calidad** | 169 tests (cobertura 100%), pipeline end-to-end en CI, CodeQL, Dependabot, lineage código-datos-modelo |
 
 ## Resultados y análisis estadístico

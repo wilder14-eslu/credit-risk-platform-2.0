@@ -302,7 +302,56 @@ El challenger recibió el 20 % del tráfico durante el test. Al cierre no hubo d
 la morosidad de los aprobados (11.2 % vs 12.3 %, p = 0.13), así que el sistema eliminó el challenger y devolvió el
 100 % del tráfico al champion: **no se cambia un modelo en producción sin evidencia de que el nuevo es mejor.**
 
-## Arquitectura
+## Software Architecture
+
+This section and [Software Design](#software-design) describe the system as it is implemented in this repository
+(source code, jobs, Asset Bundle and workflows). Whatever runs as a simulation is labeled as such.
+
+### Architectural Overview
+
+The platform is a batch-oriented ML system with one synchronous scoring path. It is organized in four runtime planes
+that share a single Python package (`src/credit_risk`) and a single versioned configuration (`config/*.yaml`):
+
+| Plane | What runs there | Implemented as | Status |
+|---|---|---|---|
+| Data and training | Ingestion, data quality gates, feature table, benchmark, statistical selection, registration, offline validation, endpoint deployment | Serverless Databricks Jobs `jobs/01` to `jobs/04`, job `ct_training_pipeline` | Implemented |
+| Serving and decision | PD estimation with SHAP factors, credit policy, request and outcome logging | Databricks Model Serving endpoint + FastAPI Databricks App (`apps/api`) | Implemented; the Apps require workspace login (Free Edition) |
+| Monitoring and experimentation | Production replay, data/prediction/concept drift, A/B evaluation, Continuous Training trigger, rollback | Serverless Jobs `jobs/05` to `jobs/08`, jobs `production_monitoring` and `model_rollback` | Implemented; production traffic is a **replay** of real 2014-2015 originations and the A/B test runs over that replay |
+| Delivery | CI, CD to dev/staging/prod, security scanning, public demo export | GitHub Actions + Databricks Asset Bundles | Implemented; the public demo is a static snapshot, not a live view |
+
+All state lives in Unity Catalog: Delta tables (data, logs, monitoring results), Volumes (raw CSV, training
+reports) and the MLflow Model Registry (versions, tags and aliases). Components integrate through these stores and
+through HTTP calls to Model Serving and the SQL warehouse; there is no message broker.
+
+### Architectural Style and Rationale
+
+| Style | Present | Evidence in the code | Why it matters for credit risk |
+|---|---|---|---|
+| Pipeline (pipes and filters) | Yes, dominant | `ct_training_pipeline`: ingest, silver/gold, train/register, validate/deploy. `production_monitoring`: replay, monitor, A/B, `condition_task`, `run_job_task`. Each task reads its inputs from and writes its outputs to Unity Catalog | Every stage is auditable and re-runnable; a failed data or model gate stops the chain before anything is registered or deployed |
+| Layered | Yes | Medallion layers (Bronze, Silver, Gold). In code: `config` at the base, pure domain modules (`data`, `features`, `models`, `inference`, `monitoring`, `policy`), infrastructure adapters (`lakehouse`, `registry`) and entry points on top (`jobs/`, `apps/`, `scripts/`) | Domain logic is plain Python, testable in CI without Spark, MLflow or a workspace |
+| Modular | Yes | One package with cohesive subpackages; jobs are thin scripts that compose package functions | The same feature and model code is used for training, batch replay, online serving and the demo |
+| Client-server | Yes, on the scoring path | `apps/api/main.py` serves core-banking clients and is itself a client of Model Serving (`DatabricksClient.invoke`) and of the SQL warehouse (`DatabricksClient.sql`) | Decision logic and its safeguards are isolated from the model runtime |
+| Component-based | Partially | Independently versioned deployable units with explicit contracts: the pyfunc model (MLflow signature + packaged config), the API (Pydantic schemas), the dashboard, the demo and the jobs | A model version, the API code and the policy version can change independently and are all recorded per decision |
+| Distributed | Partially | Managed services interacting over the network: Jobs, Model Serving, SQL warehouse, Databricks Apps, GitHub Actions, Streamlit Community Cloud | Managed serverless services replace self-hosted infrastructure, which Free Edition does not offer |
+| Event-driven | **No** | Runs are started by Quartz schedules, by the CI `workflow_run` event and by a `condition_task` that reads a task value. There is no event bus, queue or stream consumer; the API's `DeltaSink` uses an in-process background thread | Batch cadence matches the domain: loan outcomes are only known months after origination |
+
+The resulting architecture is a **layered, modular ML platform whose runtime is a set of orchestrated batch pipelines
+plus a client-server scoring path, all declared as code** (Asset Bundle, workflows, YAML configuration).
+
+### Architectural Drivers
+
+| Driver | Architectural response |
+|---|---|
+| Auditability and reproducibility | Every model version carries `git_sha`, `gold_table`, `gold_delta_version`, `data_source` and its temporal cut-offs (`registry/lineage.py` defines the required set). Every decision carries `policy_version` and `input_hash` in `inference_log` |
+| No training-serving skew | Feature engineering, the fitted `Preprocessor`, the estimator and the cost-based threshold are serialized together in one pyfunc; the same `policy.py` decides in the API, the replay and the demo |
+| Prudence under failure | No PD or an inconsistent model output never leads to `APROBAR`: the API falls back to `REVISION_MANUAL` behind a timeout and a circuit breaker |
+| Delayed labels | Outcomes are written with `observed_ts = origination + label_delay_months`; data drift acts as the early warning while labels are missing |
+| Controlled change | Thresholds, gates and drift limits live in `config/platform.yaml`; changes go through PR, CI, a staging gate and an approval-protected prod environment |
+| Free Edition limits | Serverless-only tasks, `scale_to_zero`, sampled replay (`max_rows_per_month`), capped training rows, staging without a serving endpoint |
+
+### High-Level Architecture
+
+End-to-end view of the platform: delivery pipeline, Databricks workspace and public demo.
 
 ```mermaid
 flowchart LR
@@ -359,6 +408,659 @@ flowchart LR
 | Infraestructura como código | Databricks Asset Bundles (`databricks.yml`, `resources/jobs.yml`) |
 | CI/CD | GitHub Actions: dev, gate de integración en staging, prod con aprobación |
 | Demo pública | Streamlit Community Cloud (`apps/demo`): el workflow *Demo pública* exporta el `@champion` y una foto de las tablas de monitoreo a la rama `demo`; comparte las páginas con el dashboard (`apps/dashboard/views.py`) |
+
+### Component Architecture
+
+```mermaid
+flowchart TB
+    subgraph CLIENTS["Clients"]
+        core(["Core banking client"])
+        analyst(["Analyst"])
+        visitor(["Public visitor"])
+    end
+
+    subgraph APPS["Databricks Apps (prod target only)"]
+        api["credit-risk-api<br/>FastAPI: main, schemas, policy,<br/>resilience, sinks, ab"]
+        dash["credit-risk-dashboard<br/>Streamlit: app, views"]
+    end
+
+    subgraph SERVING["Databricks Model Serving"]
+        ep["Endpoint per environment<br/>served entities: champion, challenger"]
+    end
+
+    subgraph JOBS["Serverless Jobs (resources/jobs.yml)"]
+        ct["ct_training_pipeline<br/>jobs 01 to 04"]
+        mon["production_monitoring<br/>jobs 05 to 07 + condition + run_job"]
+        rb["model_rollback<br/>job 08, manual"]
+    end
+
+    subgraph UC["Unity Catalog"]
+        vol[("Volumes: raw, artifacts")]
+        delta[("Delta tables")]
+        reg[["Model Registry<br/>credit_default_model"]]
+    end
+
+    wh["SQL warehouse"]
+    lib["credit_risk package<br/>src/credit_risk + config"]
+    demo["Public demo<br/>Streamlit Community Cloud"]
+
+    core -->|"POST /api/v1/predict, /api/v1/outcomes"| api
+    analyst --> dash
+    visitor --> demo
+    api -->|"invocations of one served model"| ep
+    dash -->|"invoke champion"| ep
+    api -->|"parameterized INSERT, SELECT"| wh
+    dash -->|"SELECT"| wh
+    wh --> delta
+    ep -->|"serves registered versions"| reg
+    ct --> vol
+    ct --> delta
+    ct -->|"register, set aliases"| reg
+    ct -->|"deploy, grant CAN_QUERY to apps"| ep
+    mon --> delta
+    mon -->|"promote or stop challenger"| reg
+    mon -->|"redeploy"| ep
+    mon -->|"retrain = true, as_of = clock"| ct
+    rb --> reg
+    rb --> ep
+    lib -.->|"imported"| ct & mon & rb
+    lib -.->|"code_paths of the pyfunc"| ep
+    lib -.->|"copied by build_demo.py"| demo
+```
+
+| Component | Location | Runtime | Responsibility |
+|---|---|---|---|
+| Core library | `src/credit_risk/` | Imported by jobs, packaged inside the model, copied into the demo | Configuration, parsing, quality, features, models, statistics, policy, monitoring, registry and reporting logic |
+| CT pipeline | `jobs/01` to `jobs/04` | Serverless Jobs | Bronze, Silver, Gold; benchmark and selection; registration as `@challenger`; offline validation; endpoint deployment and app permissions |
+| Production replay | `jobs/05_replay_production.py` | Serverless Job | Scores the next `months_per_run` months of real originations with the models loaded from the registry, applies the policy, writes `inference_log` and delayed `outcomes` |
+| Monitoring | `jobs/06_monitor.py` | Serverless Job | Data, prediction and concept drift on the replay clock; publishes `retrain` and `clock` task values |
+| A/B evaluation | `jobs/07_ab_evaluate.py` | Serverless Job | Decides `promover`, `detener` or `continuar` and moves aliases and endpoint traffic accordingly |
+| Rollback | `jobs/08_rollback.py` | Serverless Job (manual) | `@champion` back to `@previous_champion`, removes `@challenger`, redeploys |
+| Model runtime | `CreditRiskPyfunc` in `models/credit_model.py` | Model Serving | Returns `probability`, `decision`, `risk_band`, `threshold` and `top_factors` per record |
+| Scoring API | `apps/api/` | Databricks App (uvicorn) | Validation, A/B assignment, resilient serving calls, credit policy, idempotency, asynchronous logging |
+| Dashboard | `apps/dashboard/` | Databricks App (Streamlit) | Scoring form against the champion and monitoring/benchmark pages over Delta |
+| Public demo | `apps/demo/`, `scripts/build_demo.py` | Streamlit Community Cloud | Self-contained copy: exported champion, package, config, results and a snapshot of production tables |
+| Statistical report | `scripts/build_report.py`, `credit_risk/reporting/` | Local | Rebuilds `reports/results.json`, `docs/figures/` and the generated results block of this README |
+
+**External interfaces**
+
+| Interface | Provider | Consumer | Contract |
+|---|---|---|---|
+| `POST /api/v1/predict` | Scoring API | Core banking client | `PredictionRequest` (`loan_id`, `application`, `explain`), strict Pydantic validation, body limit 16 KB; returns `PredictionResponse` with `decision`, `reasons`, `probability`, `risk_band`, `top_factors`, `variant`, `model_version`, `policy_version`, `input_hash`, latencies and `cached` |
+| `POST /api/v1/outcomes` | Scoring API | Core banking client | `OutcomeRequest`; appends ground truth to `outcomes` |
+| `GET /health`, `GET /api/v1/models`, `GET /api/v1/monitoring/summary` | Scoring API | Operators | Served versions, circuit state, policy version, A/B status, last monitoring, A/B and retraining rows |
+| `/serving-endpoints/{endpoint}/served-models/{variant}/invocations` | Model Serving | API, dashboard | `dataframe_records` with the 26 application fields and `params.explain`; MLflow signature inferred at registration |
+| SQL Statement Execution | SQL warehouse | API, dashboard | Parameterized statements only for external values (`:name` placeholders) |
+| Unity Catalog Model Registry | MLflow (`databricks-uc`) | Jobs, `build_demo.py`, `smoke_check.py` | Aliases `@champion`, `@challenger`, `@previous_champion` and version tags |
+
+### Data Architecture
+
+```mermaid
+flowchart LR
+    csv[("Volume raw<br/>accepted_2007_to_2018Q4.csv")] -->|"job 01: column whitelist,<br/>cast to string"| bronze[("bronze_loans")]
+    syn["data/synthetic.py<br/>source = synthetic"] -->|"job 01"| bronze
+    bronze -->|"job 02: parse_raw via mapInPandas,<br/>dedupe loan_id"| parsed["parsed loans"]
+    parsed -->|"expectations on a sample"| dq[("data_quality_log")]
+    parsed -->|"clean: range filter"| silver[("silver_loans")]
+    silver -->|"build_features: 5 derived ratios,<br/>PK loan_id"| gold[("gold_loan_features")]
+    gold -->|"job 03: labeled rows before test_end"| train["Training"]
+    gold -->|"job 04: challenger OOT test window"| val["Offline validation"]
+    gold -->|"job 05: one month at a time"| replay["Replay"]
+    train --> evidence[("model_benchmark<br/>model_evaluation<br/>model_comparison")]
+    train --> ref[("reference_profile")]
+    replay --> ilog[("inference_log")]
+    replay --> out[("outcomes")]
+    api["Scoring API"] --> ilog
+    api --> out
+    ilog --> mon["Monitoring, job 06"]
+    out --> mon
+    ref --> mon
+    mon --> mtab[("monitoring_metrics<br/>drift_by_feature<br/>retrain_events")]
+    ilog --> ab["A/B evaluation, job 07"]
+    out --> ab
+    ab --> abres[("ab_test_results")]
+```
+
+| Table (`<catalog>.<schema>`) | Role | Written by | Read by | Write mode |
+|---|---|---|---|---|
+| `bronze_loans` | Bronze: raw application columns, id, date and `loan_status` as strings; leakage columns never enter | Job 01 | Job 02 | Overwrite |
+| `silver_loans` | Silver: typed, deduplicated, matured-only labels, out-of-range rows removed | Job 02 | Job 02 | Overwrite |
+| `gold_loan_features` | Gold: offline feature table, PK `loan_id`, application variables + derived ratios + `target_default` | Job 02 | Jobs 03, 04, 05 | Overwrite (new Delta version per run) |
+| `data_quality_log` | Result of every expectation (`error` blocks, `warning` is only logged) | Job 02 | Audit | Append |
+| `model_benchmark`, `model_evaluation`, `model_comparison` | Training evidence: benchmark metrics, DeLong selection on validation, pairwise tests on test | Job 03 | Dashboard and demo (`model_benchmark`, `model_evaluation`) | Append |
+| `reference_profile` | Training distribution and reference metrics per model version | Job 03 | Job 06 | Append |
+| `inference_log` | Every scored request: inputs, variant, version, PD, decision, reasons, `policy_version`, `input_hash`, latencies | Job 05, Scoring API | Jobs 05, 06, 07 | Append |
+| `outcomes` | Ground truth with its observation date | Job 05, Scoring API | Jobs 06, 07 | Append |
+| `monitoring_metrics`, `drift_by_feature` | Monitoring results per run | Job 06 | Dashboard, API summary, demo snapshot | Append |
+| `retrain_events` | Continuous Training triggers (also used for the cooldown) | Job 06 | Job 06, dashboard, API summary | Append |
+| `ab_test_results` | A/B decision per run | Job 07 | Dashboard, API summary, demo snapshot | Append |
+
+Data design notes:
+
+- **Schema ownership.** All operational DDL is centralized in `lakehouse.DDL` and created idempotently by
+  `ensure_objects`; columns added later are migrated with `ensure_columns` (`ALTER TABLE ADD COLUMNS`).
+- **Versioning.** Medallion tables are overwritten, so each run produces a new Delta version. Job 03 records the
+  feature table version (`DESCRIBE HISTORY`) as the `gold_delta_version` tag, which allows `VERSION AS OF` replays
+  of the exact training data.
+- **Gold vs model inputs.** Training, validation and replay read only the 26 application variables from Gold; the
+  derived ratios are recomputed inside the model by `build_features`, so serving needs only raw application fields.
+- **Training reports** are written to the `artifacts` Volume (`reports/training_report_v<n>.md`) and to MLflow.
+
+### MLOps Architecture
+
+```mermaid
+flowchart LR
+    pr(["Push or pull request"]) --> ci["CI + CodeQL: ruff, pytest 3.11 and 3.12,<br/>coverage 100%, local e2e,<br/>bundle validation"]
+    ci -->|"workflow_run success on main"| dev["CD: deploy dev"]
+    dev --> stg["Staging gate: CT with synthetic data,<br/>monitoring 2 months,<br/>lineage smoke check"]
+    stg --> prod["Deploy prod + Apps<br/>environment approval"]
+    prod --> ctj
+
+    subgraph PROD["Databricks prod workspace"]
+        ctj["CT pipeline<br/>weekly or triggered"] -->|"quality gates pass"| chal["New version<br/>@challenger"]
+        chal --> off{"Offline validation<br/>on challenger OOT test"}
+        off -->|"no champion or not comparable"| champ["@champion"]
+        off -->|"AUC gain >= 0.002"| split["Endpoint split<br/>champion 80, challenger 20"]
+        off -->|"insufficient gain"| drop["@challenger removed"]
+        monj["Monitoring job<br/>daily"] --> abd{"A/B decision"}
+        split --> abd
+        abd -->|"promover"| champ
+        abd -->|"detener"| drop
+        monj -->|"retrain = true"| ctj
+        rbk["Rollback job<br/>manual"] -->|"@previous_champion"| champ
+    end
+```
+
+The model lifecycle is encoded as alias moves in the Unity Catalog registry:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Challenger: job 03 registers a version that passed the gates
+    Challenger --> Champion: job 04, no champion, champion not servable or different data source
+    Challenger --> Discarded: job 04, offline gain below min_auc_improvement
+    Challenger --> InABTest: job 04, offline gain accepted
+    InABTest --> InABTest: job 07 continuar
+    InABTest --> Champion: job 07 promover
+    InABTest --> Discarded: job 07 detener
+    Champion --> PreviousChampion: a challenger is promoted
+    PreviousChampion --> Champion: job 08 rollback
+```
+
+| Stage | Trigger | Implementation |
+|---|---|---|
+| Continuous Training | Schedule (Monday 06:00, America/Lima), monitoring (`run_job_task` with `as_of`), CD (staging gate, optional dev run) | `ct_training_pipeline`; `split_config(as_of)` shifts train, validation and test windows to the latest labeled months |
+| Offline validation | End of every CT run | `jobs/04_validate_and_deploy.py`: champion and challenger scored on the challenger's OOT test window; `champion_vs_challenger` applies `min_auc_improvement` |
+| Online experimentation | Every monitoring run while `@challenger` exists | `jobs/07_ab_evaluate.py` + `monitoring/ab_testing.evaluate_ab_test` |
+| Monitoring | Daily schedule (07:00, America/Lima) | `jobs/05` then `jobs/06`; thresholds in `config/platform.yaml` |
+| Rollback | Manual | `model_rollback` job |
+
+The maturity mapping is in [Madurez MLOps](#madurez-mlops-google-cloud) and the drift taxonomy in
+[Monitoreo: tipos de drift](#monitoreo-tipos-de-drift).
+
+### Deployment Architecture
+
+```mermaid
+flowchart TB
+    repo(["GitHub repository"])
+
+    subgraph GHA["GitHub Actions"]
+        ciw["ci.yml"]
+        cdw["cd.yml"]
+        cq["codeql.yml"]
+        dmw["demo.yml, manual"]
+    end
+
+    subgraph WS["Single Databricks Free Edition workspace"]
+        subgraph DEVT["target dev, development mode"]
+            devs["schema credit_risk_dev<br/>endpoint credit-risk-lc-endpoint-dev"]
+        end
+        subgraph STGT["target staging"]
+            stgs["schema credit_risk_staging<br/>synthetic data, no endpoint,<br/>schedules paused"]
+        end
+        subgraph PRODT["target prod"]
+            prods["schema credit_risk<br/>endpoint credit-risk-lc-endpoint<br/>Apps: credit-risk-api, credit-risk-dashboard"]
+        end
+    end
+
+    scc["Streamlit Community Cloud<br/>branch demo"]
+
+    repo --> ciw
+    repo --> cq
+    ciw -->|"success on main"| cdw
+    cdw -->|"bundle deploy -t dev"| DEVT
+    cdw -->|"bundle deploy + run CT and monitoring"| STGT
+    cdw -->|"bundle deploy -t prod + run apps"| PRODT
+    PRODT -->|"download @champion, export tables"| dmw
+    dmw -->|"force-push orphan branch"| scc
+```
+
+| Target | Schema | Data | Model Serving | Apps | Schedules | Deployed by |
+|---|---|---|---|---|---|---|
+| `dev` | `credit_risk_dev` | Real (bundle default) | `credit-risk-lc-endpoint-dev` | No | Development mode | CD `deploy-dev` after green CI on `main` |
+| `staging` | `credit_risk_staging` | Synthetic | Disabled (`deploy_serving: "false"`) | No | Paused | CD `integration-staging`; runs CT, monitoring and `tests/e2e/smoke_check.py` |
+| `prod` | `credit_risk` | Real | `credit-risk-lc-endpoint` | API and dashboard | Active | CD `deploy-prod`, behind the `prod` GitHub environment |
+
+Packaging per deployable unit:
+
+- **Jobs** run the repository files synced by the bundle; each job script adds `<bundle root>/src` to `sys.path`
+  from `--project-root` and points `CREDIT_RISK_CONFIG_DIR` to `<bundle root>/config`.
+- **The model** is an MLflow pyfunc with `credit_model.joblib`, the `config/` directory as an artifact,
+  `src/credit_risk` as `code_paths` and pinned `SERVING_REQUIREMENTS`; it does not depend on the repository at
+  serving time.
+- **The Apps** are deployed from `apps/api` and `apps/dashboard` alone, so they carry copies of `policy.py`,
+  `ab.py` and `databricks_client.py`; `tests/test_api_app.py::test_app_copies_are_identical` keeps them identical.
+- **The demo** is assembled by `scripts/build_demo.py` (app, `views.py` from the dashboard, package, config,
+  exported champion, results and table snapshot), smoke-tested with one prediction inside the build folder and
+  published by `demo.yml` as a single-commit `demo` branch.
+
+### Architectural Decisions
+
+Statistical and business decisions are listed in [Decisiones que hacen la diferencia](#decisiones-que-hacen-la-diferencia).
+The decisions below concern the structure of the software.
+
+| # | Decision | Benefit | Trade-off accepted |
+|---|---|---|---|
+| AD-1 | One shared package; jobs are thin entry points | Domain logic is tested once in CI and reused by jobs, model, demo and report | The `sys.path` bootstrap block is repeated in the eight job scripts |
+| AD-2 | Pandas transformations reused in Spark through `mapInPandas` | A single implementation of parsing, cleaning and features for Spark, CI and the local e2e | Python batches instead of native Spark SQL; quality expectations run on a sample (up to 300,000 rows) |
+| AD-3 | The registered model bundles features, preprocessor, estimator, threshold and configuration | Removes training-serving skew; the endpoint needs only raw application fields | The serving environment installs every boosting library listed in `SERVING_REQUIREMENTS` |
+| AD-4 | The model estimates, a deterministic versioned policy decides | Business rules change through a reviewed PR without retraining; decisions are reproducible | `policy.py` is duplicated in `apps/api` (guarded by a test) |
+| AD-5 | Registry aliases are the deployment state | Promotion and rollback are alias moves followed by an endpoint redeploy | Alias moves and endpoint updates are not atomic; a failed redeploy leaves them out of sync until the next run |
+| AD-6 | A/B assignment by a deterministic hash of `loan_id`, computed by the caller | Sticky assignment, identical in the API (`ab.py`) and in the replay (`assign_variant`) | The API calls each served entity directly, so the endpoint's 80/20 route is nominal for API traffic; the share is configured twice (`CHALLENGER_TRAFFIC` in `app.yaml` and `ab_testing.challenger_traffic`) |
+| AD-7 | Production is simulated by replaying real originations, scored in-job with registry models | Real drift at Free Edition cost; the replay applies the same policy as the API | The replay does not exercise the serving endpoint's latency or availability |
+| AD-8 | Delta tables are the integration medium between jobs, API and dashboards | Simple, SQL-auditable, no extra infrastructure | Reaction time is bounded by the job schedule |
+| AD-9 | The API logs asynchronously in batches (`DeltaSink`) with re-queue on failure | No request waits on the 2X-Small warehouse | Rows still buffered in memory are lost if the process stops without `close()` |
+| AD-10 | Environments isolated by schema in one workspace; staging is a full integration gate | Matches the single-workspace limit of Free Edition and blocks integration errors before prod | Shared quota; staging does not test Model Serving |
+| AD-11 | The public demo is an exported snapshot on its own branch | Public, login-free and independent of the workspace lifetime | It reflects production only as of the last export |
+
+## Software Design
+
+### Design Overview
+
+Domain logic is written as pure functions and small classes inside `credit_risk`, and every side effect (Spark,
+Delta, MLflow, Databricks SDK, HTTP) is pushed to the edges: `lakehouse.py`, `registry/`, the `jobs/` scripts and the
+`apps/`. Heavy or platform-specific dependencies (`pyspark`, `mlflow`, `databricks.sdk`, `optuna`, the boosting
+libraries) are imported lazily inside the functions that need them. As a result the statistical, feature, policy and
+monitoring code runs in CI and in the local end-to-end test without a Databricks workspace.
+
+### Design Principles
+
+| Principle | How it shows up in the code |
+|---|---|
+| Separation of concerns | `CreditRiskModel` estimates PD, risk band and SHAP factors; `policy.decide` makes the decision; `sinks.py` persists; `resilience.py` protects the remote call; `schemas.py` validates. Monitoring is split into `data_drift`, `concept_drift`, `decision`, `ab_testing` and `replay` |
+| Single responsibility | Each module has one reason to change: `candidates.py` (algorithms and search spaces), `metrics.py` (classification metrics and cost threshold), `delong.py` (AUC inference), `comparison.py` (Holm and parsimony rule), `lineage.py` (required traceability tags) |
+| Configuration as data | Thresholds, cut-offs, gates and drift limits in `config/platform.yaml`; variables, ranges, labels and leakage columns in `config/data_schema.yaml`; fully qualified Unity Catalog names in `UCNames` from `UC_CATALOG` and `UC_SCHEMA` |
+| Pure core, imperative shell | `lakehouse.py` and `registry/` are the only package modules that touch Spark or MLflow; they are excluded from unit coverage and exercised by the e2e test and the staging smoke check |
+| Fail-safe defaults | `policy.fallback` returns `REVISION_MANUAL`; `Decision.__post_init__` rejects a non-approval without reason codes; `check_invariants` raises `InvariantError`; `assert_quality` and `check_quality_gates` stop the pipeline |
+| Determinism and reproducibility | Fixed seeds (`random_state: 42`), hash-based variant assignment, `input_hash` and `policy_version` per decision, lineage tags per model version |
+| Idempotency | `CREATE ... IF NOT EXISTS`, overwrite for Bronze, Silver and Gold (the only tasks with retries), `ensure_columns` migrations, `TTLCache` for repeated API requests |
+| Explicit contracts | Pydantic models with `extra="forbid"`, the MLflow model signature, the policy invariants and the centralized Delta DDL |
+
+### Project and Module Design
+
+The package is layered; dependencies point downwards only (verified from the imports):
+
+| Layer | Modules | Depends on |
+|---|---|---|
+| Configuration | `config.py` | YAML files and environment variables only |
+| Data | `data/lending_club.py`, `data/quality.py`, `data/synthetic.py` | `config` |
+| Features | `features/engineering.py` | `config` |
+| Statistics | `inference/delong.py`, `inference/comparison.py`, `models/metrics.py` | NumPy, SciPy, scikit-learn |
+| Decision policy | `policy.py` | Standard library only |
+| Models | `models/candidates.py`, `models/scorecard.py`, `models/credit_model.py`, `models/training.py` | Features, statistics, `policy.risk_band`, `config` |
+| Monitoring | `monitoring/data_drift.py`, `concept_drift.py`, `ab_testing.py`, `decision.py`, `replay.py` | `models/metrics` (concept drift), `concept_drift` (A/B) |
+| Infrastructure adapters | `lakehouse.py`, `registry/mlflow_registry.py`, `registry/serving_endpoint.py`, `registry/lineage.py` | `config`, `models/credit_model` |
+| Reporting | `reporting/analysis.py`, `pipeline.py`, `figures.py`, `readme.py` | Models, statistics, features |
+| Entry points | `jobs/*.py`, `scripts/*.py`, `apps/*` | Any of the above |
+
+Cohesion is high inside each subpackage. Coupling is low between domain modules; the coupling that remains is
+concentrated in the entry points: the jobs build SQL strings against the table names exposed by `UCNames`, and the
+configuration is process-global (`lru_cache` accessors that `set_config_dir` resets when the model loads inside
+Model Serving). The folder layout is in [Estructura](#estructura).
+
+### Component Responsibilities
+
+| Module | Responsibility | Main public API | Used by |
+|---|---|---|---|
+| `config.py` | Schema, platform policy and Unity Catalog names | `data_schema`, `platform_config`, `input_features`, `UCNames`, `set_config_dir` | Every layer |
+| `data/lending_club.py` | Raw CSV to canonical format, labels only for matured loans | `parse_raw`, `parse_batches`, `spark_schema_ddl`, `label_from_status`, `is_matured` | Job 02, `build_report.py`, e2e |
+| `data/quality.py` | Blocking and warning expectations, range cleaning | `run_expectations`, `assert_quality`, `clean`, `Expectation` | Job 02, `build_report.py`, e2e |
+| `data/synthetic.py` | Raw data with the Lending Club format for CI, staging and demo mode | `generate_raw` | Job 01, tests, e2e |
+| `features/engineering.py` | Derived ratios and the train-fitted preprocessor (median imputation, missing indicators, one-hot) | `build_features`, `Preprocessor`, `DERIVED_FEATURES`, `feature_label` | Job 02, models, scorecard |
+| `models/candidates.py` | Estimator construction and Optuna search spaces | `build_estimator`, `suggest_params`, `available_candidates` | `training.py` |
+| `models/metrics.py` | AUC, KS, Brier, ECE, cost-based threshold, latency, fit diagnosis | `classification_metrics`, `optimal_threshold`, `inference_latency_ms` | Training, monitoring, job 04 |
+| `models/scorecard.py` | WoE binning, Information Value and points scaling | `CreditScorecard`, `FeatureBinning` | `training.py` (regulatory benchmark, not deployed) |
+| `models/credit_model.py` | Servable model and its MLflow wrapper, per-variable SHAP contributions | `CreditRiskModel`, `CreditRiskPyfunc` | Training, registry, replay, demo |
+| `models/training.py` | Temporal splits, benchmark, statistical selection, tuning, gates, champion vs challenger | `make_splits`, `run_benchmark`, `statistical_selection`, `choose_final_model`, `check_quality_gates` | Jobs 03 and 04, reporting |
+| `inference/delong.py`, `inference/comparison.py` | DeLong CI and test, bootstrap CI, Holm adjustment, parsimony rule | `delong_roc_test`, `pairwise_delong_comparison`, `select_parsimonious` | Training, reporting |
+| `policy.py` | Credit decision, reason codes, invariants, request hash | `decide`, `fallback`, `check_invariants`, `input_hash`, `risk_band`, `POLICY_VERSION` | API, job 05, demo, `credit_model` |
+| `monitoring/*` | Drift metrics, retraining policy, A/B statistics, replay calendar | `feature_drift`, `concept_drift_report`, `retrain_decision`, `evaluate_ab_test`, `assign_variant`, `monitoring_windows` | Jobs 03, 05, 06, 07 |
+| `lakehouse.py` | Spark session, DDL, Delta reads and writes, task values, grants | `ensure_objects`, `read_pandas`, `write_pandas`, `table_version`, `set_task_value` | All jobs |
+| `registry/mlflow_registry.py` | Tracking, registration, aliases, promotion, rollback | `log_and_register`, `set_alias`, `promote_challenger`, `rollback`, `load_credit_model` | Jobs 03 to 08 |
+| `registry/serving_endpoint.py` | Endpoint configuration per environment and app permissions | `build_config`, `deploy`, `grant_query_to_apps` | Jobs 04, 07, 08 |
+| `registry/lineage.py` | Required traceability tags | `missing_lineage` | `smoke_check.py`, e2e |
+| `reporting/*` | Reproducible statistical report, figures and the generated README block | `build_results`, `assemble_results`, `render_all`, `update_readme` | `build_report.py`, job 03 |
+
+### Module Dependencies
+
+Solid arrows are Python imports; the dotted arrow is a byte-identical copy checked by a test.
+
+```mermaid
+flowchart TB
+    subgraph ENTRY["Entry points"]
+        jdata["jobs 01-02"]
+        jtrain["jobs 03-04"]
+        jops["jobs 05-08"]
+        brep["scripts/build_report.py"]
+        appdemo["apps/demo"]
+        appapi["apps/api"]
+    end
+
+    subgraph INFRA["Infrastructure adapters"]
+        lh["lakehouse"]
+        reg["registry.mlflow_registry"]
+        srv["registry.serving_endpoint"]
+    end
+
+    subgraph DOMAIN["Domain"]
+        lc["data.lending_club"]
+        qa["data.quality"]
+        syn["data.synthetic"]
+        fe["features.engineering"]
+        tr["models.training"]
+        cm["models.credit_model"]
+        cand["models.candidates"]
+        sc["models.scorecard"]
+        met["models.metrics"]
+        cmp["inference.comparison"]
+        dl["inference.delong"]
+        pol["policy"]
+        dd["monitoring.data_drift"]
+        cd["monitoring.concept_drift"]
+        abm["monitoring.ab_testing"]
+        dec["monitoring.decision"]
+        rp["monitoring.replay"]
+        rpipe["reporting.pipeline"]
+        ran["reporting.analysis"]
+        rfig["reporting.figures"]
+        rmd["reporting.readme"]
+    end
+
+    cfg["config"]
+
+    jdata --> lh & syn & lc & qa & fe
+    jtrain --> lh & tr & met & dd & reg & srv & rpipe & rfig
+    jops --> lh & pol & abm & rp & cd & dd & dec & reg & srv
+    brep --> lc & qa & rpipe & rfig & rmd
+    appdemo --> pol & cm
+    appapi -.->|"copy of"| pol
+
+    reg --> cm
+    reg --> cfg
+    srv --> cfg
+    lh --> cfg
+    tr --> fe & cmp & met & cand & cm & sc & cfg
+    cm --> fe & pol
+    cmp --> dl
+    cd --> met
+    abm --> cd
+    ran --> dl & met
+    rpipe --> tr & cm & fe & dl & ran & cfg
+    lc --> cfg
+    qa --> cfg
+    fe --> cfg
+```
+
+### ML Pipeline Design
+
+The training flow is implemented in `jobs/03_train_register.py` on top of `models/training.py`:
+
+1. **Temporal split.** `split_config(as_of)` returns the cut-offs from `platform.yaml` or, when monitoring triggers
+   the run, windows shifted to the last labeled months. `make_splits` keeps only labeled loans and caps training rows.
+2. **Benchmark.** `run_benchmark` fits every available candidate with regularized defaults. `fit_model` fits the
+   `Preprocessor` on train only and sets the threshold that minimizes expected cost (FN:FP = 5:1) on validation.
+3. **Selection on validation.** `statistical_selection` keeps eligible candidates (latency and validation overfit
+   gap) and applies `select_parsimonious`: DeLong against the best, Holm adjustment, practical margin and complexity.
+4. **Report on test, once.** `fit_scorecard` and `compare_on_test` produce DeLong CIs and Holm-adjusted pairwise
+   tests, including the WoE scorecard as a reference; nothing is decided with them.
+5. **Final model.** `choose_final_model` tunes the selected algorithm with Optuna TPE on validation, with an
+   objective that subtracts the overfit gap above `max_overfit_gap`; if the tuned model fails the gates it falls back
+   to the best default candidate that passes.
+6. **Gates and registration.** `check_quality_gates` (AUC, gap, Brier, latency) decides whether the version is
+   registered as `@challenger`, with lineage tags, a reference profile for drift and the statistical report.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Job as jobs/03_train_register.py
+    participant LH as lakehouse
+    participant T as models.training
+    participant C as inference.comparison
+    participant MLF as MLflow Tracking
+    participant R as registry.mlflow_registry
+    participant UC as UC Model Registry
+
+    Job->>LH: table_version(gold_loan_features)
+    Job->>LH: read_pandas(labeled loans before test_end)
+    Job->>T: make_splits(data, split_config(as_of))
+    Job->>MLF: start_run(retraining-trigger) with lineage tags
+    Job->>T: run_benchmark(splits)
+    T-->>Job: benchmark table and fitted candidates
+    Job->>R: log_candidate per algorithm (nested runs)
+    Job->>T: statistical_selection(table, models, splits)
+    T->>C: select_parsimonious on validation
+    C-->>T: selected algorithm and evidence
+    Job->>T: fit_scorecard and compare_on_test
+    Job->>T: choose_final_model (Optuna and fallback)
+    Job->>T: check_quality_gates(result)
+    alt gates fail
+        Job->>LH: write benchmark and selection tables without a version
+        Job-->>Job: raise RuntimeError, task fails
+    else gates pass
+        Job->>R: log_and_register(pyfunc, config, code_paths)
+        R->>UC: new version with metric, lineage and config_packaged tags
+        Job->>R: set_alias(challenger)
+        Job->>LH: write benchmark, evaluation, comparison, reference_profile
+        Job->>MLF: log report/results.json and figures
+        Job->>LH: set_task_value(gate_passed, challenger_version)
+    end
+```
+
+### Inference and Credit Decision Design
+
+The model output contract is the same everywhere it runs (`CreditRiskModel.predict_frame`): `probability`,
+`decision` (the model's own threshold decision), `risk_band`, `threshold` and `top_factors` (TreeSHAP contributions,
+or coefficient-times-value for logistic regression, aggregated back to the original variable). The final decision is
+taken by `policy.decide`, which the API, the replay job and the demo share. The Databricks dashboard is the exception:
+its scoring page shows the model's threshold decision and does not log the request.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Core banking client
+    participant API as FastAPI app
+    participant Cache as TTLCache
+    participant Guard as CircuitBreaker and TimeoutCaller
+    participant MS as Model Serving
+    participant Pol as policy.py
+    participant Sink as DeltaSink
+    participant WH as SQL warehouse
+
+    Client->>API: POST /api/v1/predict
+    API->>API: body size check and strict Pydantic validation
+    API->>Pol: input_hash(application)
+    API->>Cache: get(loan_id, hash, policy_version, explain)
+    alt same request already answered
+        Cache-->>API: stored response
+        API-->>Client: response with cached = true
+    else new request
+        API->>API: served versions (60 s cache) and assign_variant(loan_id)
+        API->>Guard: call invoke(variant)
+        Guard->>MS: served-models/variant/invocations, explain = true, timeout 3 s
+        MS-->>API: probability, risk_band, threshold, decision, top_factors
+        Note over API,MS: a failing challenger is retried on the champion. Timeout, open circuit or error leads to the fallback
+        API->>Pol: check_invariants(probability, band, threshold, decision)
+        API->>Pol: decide(probability, threshold, application, factors)
+        Pol-->>API: Decision with reasons and policy_version
+        API->>Sink: log_prediction(row), non-blocking
+        API->>Cache: put(response) only if the model answered
+        API-->>Client: PredictionResponse
+        Sink->>WH: batched parameterized INSERT into inference_log
+    end
+```
+
+```mermaid
+flowchart TD
+    start["Model Serving result"] --> got{"Result received?"}
+    got -->|"no"| fb1["REVISION_MANUAL<br/>MODELO_NO_DISPONIBLE"]
+    got -->|"yes"| inv{"Invariants hold?<br/>PD in 0..1, threshold in 0..1,<br/>band and model decision consistent"}
+    inv -->|"no"| fb2["REVISION_MANUAL<br/>SALIDA_MODELO_INCOHERENTE"]
+    inv -->|"yes"| ko{"Knock-out rules?<br/>installment / monthly income above 0.40<br/>or DTI above 45"}
+    ko -->|"yes"| rej1["RECHAZAR<br/>CUOTA_INGRESO_ALTA or DTI_ALTO + RIESGO_*"]
+    ko -->|"no"| thr{"PD >= threshold?"}
+    thr -->|"yes"| rej2["RECHAZAR<br/>PD_SOBRE_UMBRAL + RIESGO_*"]
+    thr -->|"no"| grey{"PD >= threshold - 0.02?"}
+    grey -->|"yes"| rev["REVISION_MANUAL<br/>PD_ZONA_GRIS + RIESGO_*"]
+    grey -->|"no"| ok["APROBAR"]
+```
+
+`RIESGO_<VARIABLE>` codes come from the positive SHAP contributions, ordered by impact, up to four codes per
+decision. The replay scores with `explain=False`, so its decisions carry only the rule or threshold codes.
+
+### Monitoring Design
+
+Monitoring runs on the **simulated clock** of the replay (the last replayed origination month), never on wall time:
+
+| Step | Implementation | Rule |
+|---|---|---|
+| Windows | `monitoring/replay.monitoring_windows` | Drift window: last `window_months` (3) of originations. Label window: the same length ending at `clock - label_delay_months`, restricted to outcomes with `observed_ts <= clock` |
+| Data and prediction drift | `data_drift.feature_drift` against the `reference_profile` of the champion version | PSI per feature (numeric bins or categorical shares) and on the score, plus KS for numeric features; warning at 0.10, alert at 0.25 |
+| Concept drift and prior shift | `concept_drift.concept_drift_report` on champion traffic with outcomes | Drop in AUC (0.04) or KS (0.08), Brier increase, DDM on errors, Page-Hinkley on log-loss, two-proportion z-test on the default rate. `concept_drift` is AUC or KS degradation, or DDM and Page-Hinkley together |
+| Retraining decision | `decision.retrain_decision` | Retrain if at least 3 features have PSI >= 0.25, prediction PSI >= 0.20 or any concept signal fires; minimum 300 rows; 3-month cooldown recorded in `retrain_events`. Severity: `critico`, `alerta`, `estable` or `sin_datos` |
+| Orchestration | `resources/jobs.yml` | Job 06 publishes `retrain` and `clock`; `needs_retraining` (`condition_task`) starts `ct_training_pipeline` with `trigger=monitoring` and `as_of=clock` |
+| A/B evaluation | `ab_testing.evaluate_ab_test` in job 07 | At least 500 labeled loans per arm, both arms compared from the challenger's first request. Bootstrap CI of the AUC difference and z-test on the bad rate among approved loans: `promover` if the challenger is significantly better without business harm, `detener` if it is worse, harmful or still inconclusive after 6 months, otherwise `continuar` |
+
+### Cross-Cutting Concerns
+
+| Concern | Design |
+|---|---|
+| Configuration management | YAML under Git, loaded once through `lru_cache` accessors; `CREDIT_RISK_CONFIG_DIR` relocates it for jobs, and `set_config_dir` points it to the copy packaged inside the model. Environment-specific values come from bundle variables (`catalog`, `schema`, `data_source`, `deploy_serving`, `optuna_trials`, `warehouse_id`, `git_sha`) and from `app.yaml` environment variables |
+| Error handling | Gates raise and fail the task (`assert_quality`, `check_quality_gates`, missing champion or missing cut-off tags). Informational steps catch and log (statistical report, Delta history, grants, unavailable apps). The API never surfaces serving errors: it degrades to a prudent decision. `DeltaSink` re-queues rows when an `INSERT` fails |
+| Logging | Standard `logging` with a shared format in jobs (`configure_logging`), module loggers in the package and a `credit-risk-api` logger in the API. Operational evidence is persisted as data (`inference_log`, monitoring tables, MLflow runs), not only as log lines |
+| Security | Strict input validation with closed value lists, a 16 KB body limit, parameterized SQL, security headers, OAuth identity of the Apps with `CAN_QUERY` grants, secrets only in GitHub Actions, CodeQL and Dependabot |
+| Dependency management | `pyproject.toml` extras (`ml`, `apps`, `dev`), per-app `requirements.txt`, per-job serverless environments in `resources/jobs.yml` and pinned serving requirements in `mlflow_registry.SERVING_REQUIREMENTS`; `available_candidates` skips an algorithm whose library is not installed |
+| Testing and testability | 13 unit and contract test modules; `create_app` receives fakes for the client, sink and circuit breaker; infrastructure contracts are asserted on the bundle (serverless tasks, retries only on idempotent tasks, isolated environments). `tests/e2e/run_pipeline_locally.py` runs the real job scripts with `lakehouse` functions replaced by DuckDB and the registry by MLflow on SQLite. The 100% coverage gate applies to `src/credit_risk` and `apps/api`, excluding `lakehouse.py`, `registry/*` and the copied `apps/api/policy.py`; the dashboard and demo apps are outside that scope |
+
+### Design Patterns
+
+Only patterns with a concrete implementation are listed.
+
+| Pattern | Evidence | Purpose |
+|---|---|---|
+| Adapter | `DatabricksClient` wraps the Databricks SDK behind `invoke`, `served_versions` and `sql`; `CreditRiskPyfunc` adapts `CreditRiskModel` to MLflow's `PythonModel` interface | Isolates vendor APIs from application logic and tests |
+| Factory (simple factory functions) | `candidates.build_estimator(name, params)` builds any of the four estimators; `create_app(...)` is an application factory; `serving_endpoint.build_config` builds the declarative endpoint specification | One construction point per family of objects |
+| Dependency Injection (constructor and parameter injection) | `create_app(client, sink, breaker, timeout_seconds)`; `DatabricksClient(workspace_client)`; `CircuitBreaker(clock=...)` and `TTLCache(clock=...)`; `DeltaSink` and `MemorySink` expose the same duck-typed interface and one is chosen at startup | Swapping real services for fakes in tests and degrading gracefully without a warehouse |
+| Circuit Breaker | `resilience.CircuitBreaker` with closed, open and half-open states | Fail fast while Model Serving is down or scaling from zero |
+| Producer-consumer with batching | `DeltaSink`: request threads enqueue, a daemon thread flushes in batches | Keeps warehouse latency out of the request path |
+| Cache-aside and idempotency key | `TTLCache` keyed by `loan_id`, `input_hash`, `policy_version` and `explain`; cached served versions | Same request, same answer, logged once |
+| Value Object | `Decision` (frozen dataclass that validates itself), `UCNames` (frozen) | Immutable, self-validating domain values |
+
+Evaluated and **not** present: **Strategy** (algorithm-specific behavior in `CreditRiskModel.contributions` and
+`build_estimator` is selected with `if` branches, not interchangeable strategy objects), **Template Method** (the jobs
+share a copied bootstrap block, not a base class) and **Repository** (`lakehouse.read_pandas` and `write_pandas` are
+generic data-access helpers; queries are written in the jobs and there is no per-entity repository abstraction).
+
+### UML and Sequence Diagrams
+
+The training and inference sequence diagrams are in [ML Pipeline Design](#ml-pipeline-design) and
+[Inference and Credit Decision Design](#inference-and-credit-decision-design). The class diagram covers the classes
+that carry state and behavior; the rest of the package is functional.
+
+```mermaid
+classDiagram
+    class PythonModel {
+        <<MLflow>>
+    }
+    class CreditRiskPyfunc {
+        +load_context(context)
+        +predict(context, model_input, params) DataFrame
+    }
+    class CreditRiskModel {
+        +str algorithm
+        +estimator
+        +Preprocessor preprocessor
+        +float threshold
+        +dict metadata
+        +predict_proba(raw) ndarray
+        +contributions(raw) DataFrame
+        +predict_frame(raw, explain, top_k) DataFrame
+        +global_importance(sample) Series
+    }
+    class Preprocessor {
+        +dict medians_
+        +list missing_indicators_
+        +dict vocab_
+        +fit(features) Preprocessor
+        +transform(features) DataFrame
+        +source_feature(column)$ str
+    }
+    class CreditScorecard {
+        +dict binnings
+        +fit(x, y) CreditScorecard
+        +predict_pd(x) ndarray
+        +score(x) ndarray
+        +iv_table() list
+        +points_table() list
+    }
+    class FeatureBinning {
+        +assign(values) ndarray
+        +describe(code) str
+    }
+    class Decision {
+        +str decision
+        +list reasons
+        +str policy_version
+    }
+    class CircuitBreaker {
+        +str state
+        +call(fn)
+    }
+    class TimeoutCaller
+    class TTLCache {
+        +get(key)
+        +put(key, value)
+    }
+    class DatabricksClient {
+        +invoke(endpoint, served_model, records, params) list
+        +served_versions(endpoint) dict
+        +sql(warehouse_id, statement, parameters) list
+    }
+    class DeltaSink {
+        +log_prediction(row)
+        +log_outcome(row)
+        +flush()
+        +close()
+    }
+    class MemorySink {
+        +log_prediction(row)
+        +log_outcome(row)
+        +flush()
+        +close()
+    }
+    class UCNames {
+        +str catalog
+        +str schema
+        +fq(name) str
+    }
+
+    PythonModel <|-- CreditRiskPyfunc
+    CreditRiskPyfunc --> CreditRiskModel : loads joblib artifact
+    CreditRiskModel *-- Preprocessor
+    CreditScorecard *-- FeatureBinning
+    DeltaSink --> DatabricksClient : sql
+```
+
+In the API, `create_app` composes `DatabricksClient`, one sink, `CircuitBreaker`, `TimeoutCaller`, a `TTLCache` of
+responses and a 60-second cache of served versions, and returns `Decision` values from `policy.py` as part of each response.
 
 ## Ciclo de vida cubierto
 
